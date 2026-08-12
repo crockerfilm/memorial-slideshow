@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Build the slideshow</title>
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+
+<div id="gate">
+  <h1>Enter passcode</h1>
+  <input type="password" id="gateInput" placeholder="Passcode" autocomplete="off">
+  <button id="gateBtn">Continue</button>
+  <div class="err" id="gateErr"></div>
+</div>
+
+<div id="testBanner" style="display:none;background:#b08d57;color:#0a0a0a;text-align:center;font-size:12px;padding:6px;font-family:sans-serif;letter-spacing:.03em;">
+  TEST MODE — nothing you do here is saved permanently. Fill in Supabase keys in assets/supabase-config.js to go live.
+  <button id="clearTestDataBtn" style="margin-left:10px;background:transparent;border:1px solid #0a0a0a;color:#0a0a0a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Clear test data</button>
+</div>
+
+<div class="builder" id="builderRoot" style="display:none;">
+  <h1>Build the slideshow</h1>
+  <div class="lede">Changes save automatically. <a class="presentLink" href="index.html" target="_blank">Open the live slideshow &rarr;</a></div>
+
+  <div class="card">
+    <h2>Title card</h2>
+    <div class="field">
+      <label>Name</label>
+      <input type="text" id="fTitle">
+    </div>
+    <div class="field">
+      <label>Subtitle</label>
+      <input type="text" id="fSubtitle">
+    </div>
+    <div class="field">
+      <label>Dates</label>
+      <input type="text" id="fDates" placeholder="September 18, 1969 &ndash; July 6, 2026">
+    </div>
+    <div class="field">
+      <label>Closing message</label>
+      <textarea id="fClosing"></textarea>
+    </div>
+    <div class="savingNote" id="settingsStatus">&nbsp;</div>
+  </div>
+
+  <div class="card">
+    <h2>Playback</h2>
+    <label class="audioToggleLabel" style="margin-bottom:10px;">
+      <input type="checkbox" id="fLoop" checked>
+      Loop back to the title card when it reaches the end
+    </label>
+    <label class="audioToggleLabel">
+      <input type="checkbox" id="fRandomOrder">
+      Random order (reshuffled each time it loops)
+    </label>
+  </div>
+
+  <div class="card">
+    <h2>Background music (optional)</h2>
+    <div id="musicDropzone" style="border:1px dashed #333;border-radius:6px;padding:16px;text-align:center;color:var(--ink-dim);cursor:pointer;font-size:13px;">
+      <span id="musicLabel">Click to upload an MP3</span>
+    </div>
+    <input type="file" id="musicInput" accept="audio/*" style="display:none;">
+  </div>
+
+  <div class="card">
+    <h2>Save &amp; load project</h2>
+    <p class="lede" style="margin:0 0 14px 0;">
+      Export everything here (title card, order, captions, audio settings)
+      to a file you can keep as a backup, or load onto a different device
+      or backend. It doesn't include the actual photo/video files
+      themselves — if you load it somewhere those files aren't already
+      uploaded, you'll be asked to relink them from your computer.
+    </p>
+    <button id="exportProjectBtn" type="button" style="background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;">Export project (.json)</button>
+    <label for="importProjectInput" style="display:inline-block;margin-left:10px;background:transparent;border:1px solid #333;color:var(--ink-dim);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;">Load project (.json)</label>
+    <input type="file" id="importProjectInput" accept="application/json" style="display:none;">
+    <div class="savingNote" id="projectStatus" style="margin-top:8px;">&nbsp;</div>
+  </div>
+
+  <div class="card" id="relinkCard" style="display:none;">
+    <h2>Relink missing media (<span id="missingCount">0</span>)</h2>
+    <p class="lede" style="margin:0 0 14px 0;">
+      This project references files that aren't uploaded to this backend
+      yet. Drop the original photos/videos below — filenames are matched
+      automatically — or pick a file individually for anything left over.
+    </p>
+    <div id="relinkDropzone" style="border:2px dashed #333;border-radius:8px;padding:24px;text-align:center;color:var(--ink-dim);cursor:pointer;font-size:13px;">
+      <strong>Drop matching files here</strong><br>or click to choose
+    </div>
+    <input type="file" id="relinkFileInput" multiple style="display:none;">
+    <ul id="relinkList" style="list-style:none;margin:14px 0 0 0;padding:0;"></ul>
+    <div style="margin-top:14px;">
+      <button id="finishImportBtn" type="button" style="background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;">Finish import</button>
+      <button id="cancelImportBtn" type="button" class="danger" style="background:transparent;border:1px solid var(--danger);color:var(--danger);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;margin-left:8px;">Cancel import</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Photos &amp; videos (<span id="slideCount">0</span>)</h2>
+    <div id="dropzone">
+      <strong>Drop photos or videos here</strong><br>or click to choose files
+    </div>
+    <input type="file" id="fileInput" accept="image/*,video/*" multiple>
+    <div id="uploadStatus">&nbsp;</div>
+
+    <ul id="slideList"></ul>
+    <div class="emptyList" id="emptyList" style="display:none;">No photos or videos yet &mdash; add some above.</div>
+  </div>
+</div>
+
+<script src="assets/supabase-config.js"></script>
+<script src="assets/mock-backend.js"></script>
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
+
+const isTestMode = !window.SUPABASE_URL || window.SUPABASE_URL.includes('YOUR-PROJECT-REF');
+if(isTestMode){
+  document.getElementById('testBanner').style.display = 'block';
+  document.getElementById('clearTestDataBtn').addEventListener('click', async () => {
+    if(!confirm('Clear all test-mode photos, videos, and settings? This only affects test data, not a real Supabase backend.')) return;
+    await window.__clearMockData();
+    location.reload();
+  });
+}
+const supabase = isTestMode ? window.createMockClient() : createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+// ---------- passcode gate ----------
+const gate = document.getElementById('gate');
+const gateInput = document.getElementById('gateInput');
+const gateBtn = document.getElementById('gateBtn');
+const gateErr = document.getElementById('gateErr');
+const builderRoot = document.getElementById('builderRoot');
+
+function tryUnlock(){
+  if(gateInput.value === window.BUILDER_PASSCODE){
+    sessionStorage.setItem('builder_unlocked', '1');
+    gate.style.display = 'none';
+    builderRoot.style.display = 'block';
+    init();
+  } else {
+    gateErr.textContent = 'Incorrect passcode.';
+  }
+}
+gateBtn.addEventListener('click', tryUnlock);
+gateInput.addEventListener('keydown', (e) => { if(e.key === 'Enter') tryUnlock(); });
+
+if(sessionStorage.getItem('builder_unlocked') === '1'){
+  gate.style.display = 'none';
+  builderRoot.style.display = 'block';
+  init();
+}
+
+// ---------- main builder logic ----------
+async function publicUrl(path){
+  if(isTestMode) return await window.__mockPublicUrlAsync(path);
+  return `${window.SUPABASE_URL}/storage/v1/object/public/media/${path}`;
+}
+async function mediaExists(path){
+  if(!path) return false;
+  if(isTestMode){
+    const url = await window.__mockPublicUrlAsync(path);
+    return !!url;
+  }
+  try{
+    const url = await publicUrl(path);
+    const res = await fetch(url, { method: 'HEAD' });
+    return res.ok;
+  }catch(e){
+    return false;
+  }
+}
+function slugFile(name){
+  return name.toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/-+/g,'-');
+}
+function escapeHtml(str){
+  const d = document.createElement('div');
+  d.innerText = str || '';
+  return d.innerHTML;
+}
+
+let slides = [];
+let settingsDebounce = null;
+
+async function init(){
+  await loadSettings();
+  await loadSlides();
+  wireSettingsFields();
+  wirePlaybackToggles();
+  wireDropzone();
+  wireMusic();
+  wireProjectExportImport();
+  wireRelinkDropzone();
+}
+
+// --- settings (title card / closing / music / playback) ---
+async function loadSettings(){
+  const { data } = await supabase.from('settings').select('*').eq('id', 1).single();
+  const s = data || {};
+  document.getElementById('fTitle').value = s.title || '';
+  document.getElementById('fSubtitle').value = s.subtitle || '';
+  document.getElementById('fDates').value = s.dates || '';
+  document.getElementById('fClosing').value = s.closing_message || '';
+  document.getElementById('fLoop').checked = s.loop_enabled !== false;
+  document.getElementById('fRandomOrder').checked = !!s.random_order;
+  document.getElementById('musicLabel').textContent = s.music_path
+    ? 'Music uploaded — click to replace'
+    : 'Click to upload an MP3';
+}
+
+function wirePlaybackToggles(){
+  document.getElementById('fLoop').addEventListener('change', async (e) => {
+    await supabase.from('settings').update({ loop_enabled: e.target.checked }).eq('id', 1);
+  });
+  document.getElementById('fRandomOrder').addEventListener('change', async (e) => {
+    await supabase.from('settings').update({ random_order: e.target.checked }).eq('id', 1);
+  });
+}
+
+function wireSettingsFields(){
+  const ids = ['fTitle','fSubtitle','fDates','fClosing'];
+  ids.forEach(id => {
+    document.getElementById(id).addEventListener('input', () => {
+      clearTimeout(settingsDebounce);
+      const statusEl = document.getElementById('settingsStatus');
+      statusEl.textContent = 'Saving…';
+      settingsDebounce = setTimeout(async () => {
+        const { error } = await supabase.from('settings').update({
+          title: document.getElementById('fTitle').value,
+          subtitle: document.getElementById('fSubtitle').value,
+          dates: document.getElementById('fDates').value,
+          closing_message: document.getElementById('fClosing').value
+        }).eq('id', 1);
+        statusEl.textContent = error ? ('Error: ' + error.message) : 'Saved.';
+      }, 500);
+    });
+  });
+}
+
+function wireMusic(){
+  const dz = document.getElementById('musicDropzone');
+  const input = document.getElementById('musicInput');
+  dz.addEventListener('click', () => input.click());
+  input.addEventListener('change', async () => {
+    const file = input.files[0];
+    if(!file) return;
+    dz.querySelector('#musicLabel').textContent = 'Uploading…';
+    const path = `music/${Date.now()}-${slugFile(file.name)}`;
+    const { error: upErr } = await supabase.storage.from('media').upload(path, file, { upsert:true });
+    if(upErr){ dz.querySelector('#musicLabel').textContent = 'Upload failed: ' + upErr.message; return; }
+    const { error: setErr } = await supabase.from('settings').update({ music_path: path }).eq('id', 1);
+    dz.querySelector('#musicLabel').textContent = setErr ? ('Error: ' + setErr.message) : 'Music uploaded — click to replace';
+  });
+}
+
+// --- slides (photos/videos) ---
+async function loadSlides(){
+  const { data, error } = await supabase.from('slides').select('*').order('sort_order', { ascending:true });
+  slides = data || [];
+  await renderSlideList();
+}
+
+async function renderSlideList(){
+  const list = document.getElementById('slideList');
+  const empty = document.getElementById('emptyList');
+  document.getElementById('slideCount').textContent = slides.length;
+  list.innerHTML = '';
+  if(slides.length === 0){ empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+
+  // Resolve every thumbnail URL up front (async in test mode) before
+  // building any DOM, so rows don't flash in without images.
+  const urls = {};
+  await Promise.all(slides.map(async s => { urls[s.id] = await publicUrl(s.storage_path); }));
+
+  slides.forEach((s) => {
+    const li = document.createElement('li');
+    li.className = 'slideRow';
+    li.draggable = true;
+    li.dataset.id = s.id;
+
+    const thumbInner = s.type === 'video'
+      ? `<video src="${urls[s.id]}" muted></video>`
+      : `<img src="${urls[s.id]}" loading="lazy">`;
+
+    const audioToggle = s.type === 'video'
+      ? `<label class="audioToggleLabel">
+           <input type="checkbox" class="audioToggle" data-id="${s.id}" ${s.audio_enabled === false ? '' : 'checked'}>
+           Audio
+         </label>`
+      : '';
+
+    li.innerHTML = `
+      <div class="dragHandle">&#9776;</div>
+      <div class="thumb">${thumbInner}</div>
+      <div class="meta">
+        <div class="fname">${escapeHtml(s.filename || s.storage_path.split('/').pop())} &middot; ${s.type}</div>
+        <input type="text" placeholder="Caption (optional)" value="${(s.caption || '').replace(/"/g,'&quot;')}" data-id="${s.id}" class="captionInput">
+        ${audioToggle}
+      </div>
+      <div class="actions">
+        <button class="danger removeBtn" data-id="${s.id}">Remove</button>
+      </div>
+    `;
+    list.appendChild(li);
+  });
+
+  list.querySelectorAll('.captionInput').forEach(inp => {
+    let t = null;
+    inp.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(async () => {
+        await supabase.from('slides').update({ caption: inp.value }).eq('id', inp.dataset.id);
+      }, 500);
+    });
+  });
+
+  list.querySelectorAll('.audioToggle').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      await supabase.from('slides').update({ audio_enabled: cb.checked }).eq('id', cb.dataset.id);
+      const row = slides.find(s => s.id === cb.dataset.id);
+      if(row) row.audio_enabled = cb.checked;
+    });
+  });
+
+  list.querySelectorAll('.removeBtn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const slide = slides.find(s => s.id === id);
+      if(!confirm('Remove this photo/video? This cannot be undone.')) return;
+      if(slide){
+        await supabase.storage.from('media').remove([slide.storage_path]);
+        await supabase.from('slides').delete().eq('id', id);
+      }
+      await loadSlides();
+    });
+  });
+
+  wireDragReorder(list);
+}
+
+function wireDragReorder(list){
+  let dragEl = null;
+  list.querySelectorAll('.slideRow').forEach(row => {
+    row.addEventListener('dragstart', () => { dragEl = row; row.classList.add('dragging'); });
+    row.addEventListener('dragend', async () => {
+      row.classList.remove('dragging');
+      dragEl = null;
+      const ids = [...list.querySelectorAll('.slideRow')].map(r => r.dataset.id);
+      await Promise.all(ids.map((id, idx) =>
+        supabase.from('slides').update({ sort_order: idx }).eq('id', id)
+      ));
+      slides = ids.map(id => slides.find(s => s.id === id));
+    });
+    row.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if(!dragEl || dragEl === row) return;
+      const rect = row.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      row.parentNode.insertBefore(dragEl, before ? row : row.nextSibling);
+    });
+  });
+}
+
+function wireDropzone(){
+  const dz = document.getElementById('dropzone');
+  const input = document.getElementById('fileInput');
+  const status = document.getElementById('uploadStatus');
+
+  dz.addEventListener('click', () => input.click());
+  dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dz.classList.remove('drag');
+    handleFiles(e.dataTransfer.files);
+  });
+  input.addEventListener('change', () => handleFiles(input.files));
+
+  async function handleFiles(fileList){
+    const files = [...fileList];
+    if(files.length === 0) return;
+    let done = 0;
+    let nextOrder = slides.length ? Math.max(...slides.map(s => s.sort_order)) + 1 : 0;
+
+    for(const file of files){
+      status.textContent = `Uploading ${done+1} of ${files.length}: ${file.name}`;
+
+      if(file.size > 48 * 1024 * 1024){
+        status.textContent = `Skipped ${file.name} — over 48MB, the free storage plan's per-file limit is 50MB. Compress it and try again.`;
+        done++;
+        continue;
+      }
+
+      const type = file.type.startsWith('video/') ? 'video' : 'photo';
+      const path = `${type}/${Date.now()}-${slugFile(file.name)}`;
+
+      const { error: upErr } = await supabase.storage.from('media').upload(path, file);
+      if(upErr){
+        status.textContent = `Failed to upload ${file.name}: ${upErr.message}`;
+        done++;
+        continue;
+      }
+
+      await supabase.from('slides').insert({
+        storage_path: path,
+        type,
+        caption: '',
+        sort_order: nextOrder++,
+        audio_enabled: true,
+        filename: file.name
+      });
+
+      done++;
+    }
+
+    status.textContent = `Done — uploaded ${files.length} file${files.length === 1 ? '' : 's'}.`;
+    input.value = '';
+    await loadSlides();
+  }
+}
+
+// --- save & load project (export/import with media relinking) ---
+let pendingImport = null; // { settings, slides: [{ storage_path, type, caption, sort_order, audio_enabled, filename, _exists }] }
+
+function wireProjectExportImport(){
+  document.getElementById('exportProjectBtn').addEventListener('click', exportProject);
+  document.getElementById('importProjectInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if(file) await startImport(file);
+  });
+  document.getElementById('finishImportBtn').addEventListener('click', async () => {
+    const stillMissing = missingItems();
+    if(stillMissing.length > 0){
+      if(!confirm(`${stillMissing.length} file(s) are still unmatched and will show as broken placeholders until you relink them later. Finish anyway?`)) return;
+    }
+    await finalizeImport();
+  });
+  document.getElementById('cancelImportBtn').addEventListener('click', () => {
+    pendingImport = null;
+    document.getElementById('relinkCard').style.display = 'none';
+    document.getElementById('projectStatus').textContent = 'Import cancelled.';
+  });
+}
+
+async function exportProject(){
+  const statusEl = document.getElementById('projectStatus');
+  statusEl.textContent = 'Preparing export…';
+
+  const { data: settingsRow } = await supabase.from('settings').select('*').eq('id', 1).single();
+  const { data: slideRows } = await supabase.from('slides').select('*').order('sort_order', { ascending: true });
+
+  const payload = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: {
+      title: settingsRow.title || '',
+      subtitle: settingsRow.subtitle || '',
+      dates: settingsRow.dates || '',
+      closing_message: settingsRow.closing_message || '',
+      music_path: settingsRow.music_path || '',
+      loop_enabled: settingsRow.loop_enabled !== false,
+      random_order: !!settingsRow.random_order
+    },
+    slides: (slideRows || []).map(s => ({
+      storage_path: s.storage_path,
+      type: s.type,
+      caption: s.caption || '',
+      sort_order: s.sort_order,
+      audio_enabled: s.audio_enabled !== false,
+      filename: s.filename || s.storage_path.split('/').pop()
+    }))
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const stamp = new Date().toISOString().slice(0, 10);
+  const namePart = slugFile(settingsRow.title || 'slideshow');
+  a.download = `${namePart}-project-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  statusEl.textContent = `Exported ${payload.slides.length} slide(s) as ${a.download}.`;
+}
+
+async function startImport(file){
+  const statusEl = document.getElementById('projectStatus');
+  let parsed;
+  try{
+    parsed = JSON.parse(await file.text());
+  }catch(e){
+    statusEl.textContent = 'That file is not valid JSON — could not read it as a project export.';
+    return;
+  }
+  if(!parsed || !Array.isArray(parsed.slides) || !parsed.settings){
+    statusEl.textContent = 'That file does not look like a slideshow project export.';
+    return;
+  }
+
+  if(!confirm('Loading a project replaces everything currently in this builder — all current photos, videos, and settings. This cannot be undone. Continue?')) return;
+
+  statusEl.textContent = 'Checking which files are already available…';
+  const checked = await Promise.all(parsed.slides.map(async (s) => ({
+    storage_path: s.storage_path,
+    type: s.type === 'video' ? 'video' : 'photo',
+    caption: s.caption || '',
+    sort_order: typeof s.sort_order === 'number' ? s.sort_order : 0,
+    audio_enabled: s.audio_enabled !== false,
+    filename: s.filename || (s.storage_path || '').split('/').pop() || 'untitled',
+    _exists: await mediaExists(s.storage_path)
+  })));
+
+  pendingImport = { settings: parsed.settings, slides: checked };
+  statusEl.textContent = '';
+  renderRelinkPanel();
+}
+
+function missingItems(){
+  return pendingImport ? pendingImport.slides.filter(s => !s._exists) : [];
+}
+
+function renderRelinkPanel(){
+  if(!pendingImport) return;
+  const missing = missingItems();
+  document.getElementById('missingCount').textContent = missing.length;
+  const relinkCard = document.getElementById('relinkCard');
+
+  if(missing.length === 0){
+    relinkCard.style.display = 'none';
+    finalizeImport();
+    return;
+  }
+
+  relinkCard.style.display = 'block';
+  const list = document.getElementById('relinkList');
+  list.innerHTML = '';
+
+  missing.forEach((s) => {
+    const li = document.createElement('li');
+    li.className = 'slideRow';
+    li.innerHTML = `
+      <div class="meta">
+        <div class="fname">${escapeHtml(s.filename)} &middot; ${s.type}${s.caption ? ' — ' + escapeHtml(s.caption) : ''}</div>
+      </div>
+      <div class="actions">
+        <input type="file" class="relinkSingleInput" data-key="${escapeHtml(s.storage_path)}" accept="${s.type === 'video' ? 'video/*' : 'image/*'}">
+      </div>
+    `;
+    list.appendChild(li);
+  });
+
+  list.querySelectorAll('.relinkSingleInput').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const file = inp.files[0];
+      if(file) await relinkOne(inp.dataset.key, file);
+    });
+  });
+}
+
+async function relinkOne(oldPath, file){
+  const type = file.type.startsWith('video/') ? 'video' : 'photo';
+  const newPath = `${type}/${Date.now()}-${slugFile(file.name)}`;
+  const { error } = await supabase.storage.from('media').upload(newPath, file);
+  if(error){
+    alert(`Upload failed for ${file.name}: ${error.message}`);
+    return;
+  }
+  const entry = pendingImport.slides.find(s => s.storage_path === oldPath);
+  if(entry){
+    entry.storage_path = newPath;
+    entry._exists = true;
+  }
+  renderRelinkPanel();
+}
+
+function wireRelinkDropzone(){
+  const dz = document.getElementById('relinkDropzone');
+  const input = document.getElementById('relinkFileInput');
+  dz.addEventListener('click', () => input.click());
+  dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dz.classList.remove('drag');
+    await autoMatchFiles(e.dataTransfer.files);
+  });
+  input.addEventListener('change', async () => {
+    await autoMatchFiles(input.files);
+    input.value = '';
+  });
+}
+
+async function autoMatchFiles(fileList){
+  if(!pendingImport) return;
+  const files = [...fileList];
+  // Snapshot first -- relinkOne() mutates pendingImport.slides as it goes,
+  // so iterate over a fixed list of what's missing right now.
+  const missing = missingItems();
+  for(const entry of missing){
+    const wantName = entry.filename.toLowerCase();
+    const match = files.find(f => f.name.toLowerCase() === wantName);
+    if(match) await relinkOne(entry.storage_path, match);
+  }
+}
+
+async function finalizeImport(){
+  if(!pendingImport) return;
+  const statusEl = document.getElementById('projectStatus');
+  statusEl.textContent = 'Applying project…';
+
+  // Music: if the imported project references a music file that isn't
+  // available here, drop it rather than leave a silently broken reference
+  // -- easy enough to re-upload a single track after the fact.
+  let musicPath = pendingImport.settings.music_path || '';
+  let musicDropped = false;
+  if(musicPath){
+    const ok = await mediaExists(musicPath);
+    if(!ok){ musicPath = ''; musicDropped = true; }
+  }
+
+  // Clear existing slides (storage files are left alone, only the DB rows
+  // are cleared -- avoids deleting media that might still be referenced
+  // elsewhere or worth keeping as a manual backup).
+  const { data: existing } = await supabase.from('slides').select('*');
+  for(const row of (existing || [])){
+    await supabase.from('slides').delete().eq('id', row.id);
+  }
+
+  await supabase.from('settings').update({
+    title: pendingImport.settings.title || '',
+    subtitle: pendingImport.settings.subtitle || '',
+    dates: pendingImport.settings.dates || '',
+    closing_message: pendingImport.settings.closing_message || '',
+    music_path: musicPath,
+    loop_enabled: pendingImport.settings.loop_enabled !== false,
+    random_order: !!pendingImport.settings.random_order
+  }).eq('id', 1);
+
+  const toInsert = pendingImport.slides.map(s => ({
+    storage_path: s.storage_path,
+    type: s.type,
+    caption: s.caption,
+    sort_order: s.sort_order,
+    audio_enabled: s.audio_enabled,
+    filename: s.filename
+  }));
+  if(toInsert.length) await supabase.from('slides').insert(toInsert);
+
+  pendingImport = null;
+  document.getElementById('relinkCard').style.display = 'none';
+
+  await loadSettings();
+  await loadSlides();
+
+  statusEl.textContent = musicDropped
+    ? 'Project loaded. The background music file wasn\'t found here — re-upload it above if you want one.'
+    : 'Project loaded.';
+}
+</script>
+</body>
+</html>

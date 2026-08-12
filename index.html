@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>In Loving Memory</title>
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+
+<div id="startOverlay">
+  <h1 id="startTitle">Loading&hellip;</h1>
+  <button id="startBtn" style="display:none;">Begin</button>
+  <div class="hint">Click once to start &middot; press F for fullscreen</div>
+</div>
+
+<div id="testBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:60;background:#b08d57;color:#0a0a0a;text-align:center;font-size:12px;padding:4px;font-family:sans-serif;letter-spacing:.03em;">
+  TEST MODE — showing sample data only, nothing here is saved. Fill in Supabase keys in assets/supabase-config.js to go live.
+</div>
+
+<progress id="bar" value="0" max="100"></progress>
+<div id="stage"></div>
+
+<div id="hud">
+  <div class="left">
+    <button id="prevBtn">&#8592; Prev</button>
+    <button id="playBtn">Pause</button>
+    <button id="nextBtn">Next &#8594;</button>
+  </div>
+  <div id="counter">&nbsp;</div>
+  <div class="right">
+    <button id="muteBtn">Mute</button>
+    <button id="fsBtn">Fullscreen</button>
+  </div>
+</div>
+
+<audio id="bgm" loop></audio>
+
+<script src="assets/supabase-config.js"></script>
+<script src="assets/mock-backend.js"></script>
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
+
+const isTestMode = !window.SUPABASE_URL || window.SUPABASE_URL.includes('YOUR-PROJECT-REF');
+if(isTestMode) document.getElementById('testBanner').style.display = 'block';
+const supabase = isTestMode ? window.createMockClient() : createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+const stage = document.getElementById('stage');
+const bar = document.getElementById('bar');
+const counter = document.getElementById('counter');
+const bgm = document.getElementById('bgm');
+const startOverlay = document.getElementById('startOverlay');
+const startTitle = document.getElementById('startTitle');
+const startBtn = document.getElementById('startBtn');
+const playBtn = document.getElementById('playBtn');
+const muteBtn = document.getElementById('muteBtn');
+const fsBtn = document.getElementById('fsBtn');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+
+async function publicUrl(path){
+  if(isTestMode) return await window.__mockPublicUrlAsync(path);
+  return `${window.SUPABASE_URL}/storage/v1/object/public/media/${path}`;
+}
+function escapeHtml(str){
+  const d = document.createElement('div');
+  d.innerText = str || '';
+  return d.innerHTML;
+}
+
+let settings = {};
+let slides = [];
+let items = [];
+let current = 0;
+let playing = true;
+let timer = null;
+let barTimer = null;
+let videoSafetyTimer = null;
+const DEFAULT_DUR = 6000;
+
+function shuffle(arr){
+  const a = [...arr];
+  for(let i = a.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function buildItems(){
+  // Title and closing cards always stay fixed at the ends -- only the
+  // photo/video portion in between gets shuffled when random order is on,
+  // so index 0 and the last index are always predictable.
+  const ordered = settings.random_order ? shuffle(slides) : slides;
+  items = [{ kind:'title' }, ...ordered.map(s => ({ kind:'slide', data:s })), { kind:'closing' }];
+}
+
+async function load(){
+  const { data: settingsRow } = await supabase.from('settings').select('*').eq('id', 1).single();
+  settings = settingsRow || {};
+
+  const { data: slideRows, error } = await supabase
+    .from('slides')
+    .select('*')
+    .order('sort_order', { ascending: true });
+
+  if(error){
+    startTitle.textContent = 'Could not load the slideshow';
+    document.querySelector('#startOverlay .hint').textContent = error.message;
+    return;
+  }
+
+  slides = slideRows || [];
+  startTitle.textContent = settings.title || 'In Loving Memory';
+
+  if(slides.length === 0){
+    startOverlay.querySelector('.hint').textContent =
+      'No photos have been added yet. Once they are uploaded through the builder page, reload this page.';
+    return;
+  }
+
+  buildItems();
+  startBtn.style.display = 'inline-block';
+}
+
+function renderTitleCard(){
+  const el = document.createElement('div');
+  el.className = 'slide';
+  el.innerHTML = `
+    <div class="titlecard">
+      <h1>${escapeHtml(settings.title)}</h1>
+      <div class="rule"></div>
+      ${settings.subtitle ? `<div class="sub">${escapeHtml(settings.subtitle)}</div>` : ''}
+      ${settings.dates ? `<div class="dates">${escapeHtml(settings.dates)}</div>` : ''}
+    </div>`;
+  return el;
+}
+function renderClosingCard(){
+  const el = document.createElement('div');
+  el.className = 'slide';
+  el.innerHTML = `
+    <div class="titlecard">
+      <div class="rule"></div>
+      <div class="sub">${escapeHtml(settings.closing_message || 'Thank you.')}</div>
+    </div>`;
+  return el;
+}
+let globalMuted = false;
+
+async function renderMediaSlide(s){
+  const el = document.createElement('div');
+  el.className = 'slide';
+  const url = await publicUrl(s.storage_path);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'media-wrap';
+
+  const tag = s.type === 'video' ? 'video' : 'img';
+  const bg = document.createElement(tag);
+  const fg = document.createElement(tag);
+  bg.className = 'media-bg';
+  fg.className = 'media-fg';
+  bg.src = url;
+  fg.src = url;
+
+  if(s.type === 'video'){
+    bg.muted = true;         // background copy is purely decorative, never plays audio
+    bg.playsInline = true;
+    fg.playsInline = true;
+    // Start muted -- browsers reliably allow autoplay of muted video even
+    // when the .play() call happens a few ticks after the user's click (as
+    // ours does, since it's behind an async URL lookup). We unmute right
+    // after playback actually begins, in renderCurrent below -- but only if
+    // this slide's audio is enabled. Without the muted-start step, an
+    // unmuted autoplay call can get silently blocked, which meant the video
+    // never played and its 'ended' event never fired -- so the whole show
+    // just sat there forever on that slide.
+    fg.muted = true;
+    fg.onended = () => advance(true);
+    fg.onerror = () => {
+      console.warn('Video failed to load, skipping:', s.storage_path);
+      advance(true);
+    };
+    el._videoEl = fg;
+    el._bgVideoEl = bg;
+    el._audioEnabled = s.audio_enabled !== false; // default to on unless explicitly turned off
+  }
+
+  wrap.appendChild(bg);
+  wrap.appendChild(fg);
+  el.appendChild(wrap);
+
+  if(s.caption){
+    const cap = document.createElement('div');
+    cap.className = 'caption';
+    cap.textContent = s.caption;
+    el.appendChild(cap);
+  }
+  return el;
+}
+
+function clearTimers(){
+  if(timer){ clearTimeout(timer); timer = null; }
+  if(barTimer){ clearInterval(barTimer); barTimer = null; }
+  if(videoSafetyTimer){ clearTimeout(videoSafetyTimer); videoSafetyTimer = null; }
+  bar.value = 0;
+}
+function startBar(durationMs){
+  bar.value = 0;
+  let elapsed = 0;
+  barTimer = setInterval(() => {
+    if(!playing) return;
+    elapsed += 100;
+    bar.value = Math.min(100, (elapsed/durationMs)*100);
+  }, 100);
+}
+
+const CROSSFADE_MS = 1200; // must match the .slide opacity transition duration in app.css
+
+async function renderCurrent(){
+  clearTimers();
+  const item = items[current];
+  const outgoingEl = stage.querySelector('.slide.active'); // null on the very first slide
+  let el, durationMs;
+
+  if(item.kind === 'title'){ el = renderTitleCard(); durationMs = 5000; }
+  else if(item.kind === 'closing'){ el = renderClosingCard(); durationMs = 8000; }
+  else {
+    el = await renderMediaSlide(item.data);
+    durationMs = item.data.type === 'video' ? null : DEFAULT_DUR;
+  }
+
+  // If the user navigated again while this slide's media was still
+  // loading (e.g. rapid next/prev clicks), don't render a stale slide.
+  if(items[current] !== item) return;
+
+  stage.appendChild(el);
+  counter.textContent = item.kind === 'title' ? 'Title'
+    : item.kind === 'closing' ? 'Closing'
+    : `${current} / ${slides.length}`;
+
+  // Crossfade: the incoming slide starts at opacity 0 (default .slide
+  // style) and the outgoing one is still fully visible. Flipping both
+  // classes in the same frame lets the CSS opacity transition dissolve
+  // between them, instead of the old hard cut (stage.innerHTML = '').
+  requestAnimationFrame(() => {
+    el.classList.add('active');
+    if(outgoingEl) outgoingEl.classList.remove('active');
+  });
+
+  if(outgoingEl){
+    setTimeout(() => {
+      if(outgoingEl._videoEl) outgoingEl._videoEl.pause();
+      if(outgoingEl._bgVideoEl) outgoingEl._bgVideoEl.pause();
+      outgoingEl.remove();
+    }, CROSSFADE_MS);
+  }
+
+  if(playing){
+    if(durationMs){ timer = setTimeout(() => advance(true), durationMs); startBar(durationMs); }
+    if(el._videoEl){
+      const v = el._videoEl;
+      const wantsAudio = el._audioEnabled && !globalMuted;
+      v.play().then(() => {
+        v.muted = !wantsAudio; // now that playback has actually started, apply the real mute preference
+      }).catch(err => {
+        console.warn('Video could not autoplay, will skip via safety timeout:', err);
+      });
+      if(el._bgVideoEl) el._bgVideoEl.play().catch(()=>{}); // decorative background copy, errors ignored
+      // Hard safety net: no matter what goes wrong (blocked autoplay,
+      // stalled load, an unsupported codec that errors silently), this
+      // slide will never hang the show for more than this long.
+      const HARD_MAX_MS = 45000;
+      videoSafetyTimer = setTimeout(() => {
+        console.warn('Video safety timeout reached, advancing:', v.src);
+        advance(true);
+      }, HARD_MAX_MS);
+      v.addEventListener('ended', () => clearTimeout(videoSafetyTimer), { once:true });
+      v.addEventListener('error', () => clearTimeout(videoSafetyTimer), { once:true });
+    }
+  }
+}
+
+// isAuto = true means this call came from a timer/video-ended event (the
+// show continuing on its own); isAuto = false/omitted means a person
+// clicked Next or pressed an arrow key. Looping only gates the automatic
+// case -- manual navigation can always step past the closing card.
+function advance(isAuto){
+  const atClosing = current === items.length - 1;
+
+  if(isAuto && atClosing && !settings.loop_enabled){
+    clearTimers();
+    playing = false;
+    playBtn.textContent = 'Play';
+    return; // stay put on the closing card instead of restarting
+  }
+
+  if(atClosing && settings.random_order){
+    buildItems(); // fresh shuffle of the photo/video order for the next pass
+  }
+
+  current = (current + 1) % items.length;
+  renderCurrent();
+}
+function back(){ current = (current - 1 + items.length) % items.length; renderCurrent(); }
+function togglePlay(){
+  playing = !playing;
+  playBtn.textContent = playing ? 'Pause' : 'Play';
+  const activeEl = stage.querySelector('.slide.active');
+  if(activeEl && activeEl._videoEl){
+    if(playing) activeEl._videoEl.play().catch(()=>{});
+    else activeEl._videoEl.pause();
+    if(activeEl._bgVideoEl){
+      if(playing) activeEl._bgVideoEl.play().catch(()=>{});
+      else activeEl._bgVideoEl.pause();
+    }
+  }
+  if(playing) renderCurrent(); else clearTimers();
+}
+
+prevBtn.addEventListener('click', back);
+nextBtn.addEventListener('click', () => advance(false));
+playBtn.addEventListener('click', togglePlay);
+muteBtn.addEventListener('click', () => {
+  globalMuted = !globalMuted;
+  bgm.muted = globalMuted;
+  muteBtn.textContent = globalMuted ? 'Unmute' : 'Mute';
+  const activeEl = stage.querySelector('.slide.active');
+  if(activeEl && activeEl._videoEl){
+    const wantsAudio = activeEl._audioEnabled && !globalMuted;
+    activeEl._videoEl.muted = !wantsAudio;
+  }
+});
+fsBtn.addEventListener('click', () => {
+  if(!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
+  else document.exitFullscreen().catch(()=>{});
+});
+document.addEventListener('keydown', (e) => {
+  if(e.code === 'ArrowRight') advance();
+  if(e.code === 'ArrowLeft') back();
+  if(e.code === 'Space'){ e.preventDefault(); togglePlay(); }
+  if(e.key === 'f' || e.key === 'F') fsBtn.click();
+  if(e.key === 'm' || e.key === 'M') muteBtn.click();
+});
+startBtn.addEventListener('click', async () => {
+  startOverlay.style.display = 'none';
+  if(settings.music_path){
+    bgm.src = await publicUrl(settings.music_path);
+    bgm.volume = 0.5;
+    bgm.muted = true; // same autoplay-safe trick as videos: start muted, then unmute once playing
+    bgm.play().then(() => { bgm.muted = globalMuted; }).catch(err => {
+      console.warn('Background music could not autoplay:', err);
+    });
+  }
+  current = 0;
+  renderCurrent();
+});
+
+load();
+</script>
+</body>
+</html>
