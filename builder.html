@@ -71,6 +71,7 @@
 
   <div class="card">
     <h2>Photos &amp; videos (<span id="slideCount">0</span>)</h2>
+    <div class="savingNote" id="storageUsage" style="margin-bottom:12px;">&nbsp;</div>
     <div id="dropzone">
       <strong>Drop photos or videos here</strong><br>or click to choose files
     </div>
@@ -148,6 +149,31 @@ async function init(){
   wirePlaybackToggles();
   wireDropzone();
   wireMusic();
+  refreshStorageUsage();
+}
+
+// --- storage usage callout (free Supabase tier caps at 1GB) ---
+const STORAGE_LIMIT_BYTES = 1024 * 1024 * 1024;
+
+async function refreshStorageUsage(){
+  const el = document.getElementById('storageUsage');
+  if(isTestMode){ el.textContent = ''; return; }
+  try{
+    let totalBytes = 0;
+    for(const folder of ['photo', 'video', 'music']){
+      const { data, error } = await supabase.storage.from('media').list(folder, { limit: 1000 });
+      if(error) continue;
+      for(const item of (data || [])){
+        if(item.metadata && typeof item.metadata.size === 'number') totalBytes += item.metadata.size;
+      }
+    }
+    const usedMb = (totalBytes / (1024 * 1024)).toFixed(0);
+    const limitMb = (STORAGE_LIMIT_BYTES / (1024 * 1024)).toFixed(0);
+    const pct = Math.min(100, (totalBytes / STORAGE_LIMIT_BYTES) * 100).toFixed(0);
+    el.textContent = `Storage used: ${usedMb} MB of ${limitMb} MB (${pct}%) on the free Supabase plan.`;
+  }catch(e){
+    el.textContent = '';
+  }
 }
 
 // --- settings (title card / closing / music / playback) ---
@@ -296,6 +322,7 @@ async function renderSlideList(){
         await supabase.from('slides').delete().eq('id', id);
       }
       await loadSlides();
+      refreshStorageUsage();
     });
   });
 
@@ -390,6 +417,7 @@ function wireDropzone(){
       : `Done — uploaded ${files.length} file${files.length === 1 ? '' : 's'}.`;
     input.value = '';
     await loadSlides();
+    refreshStorageUsage();
   }
 }
 
