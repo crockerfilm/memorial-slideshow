@@ -84,9 +84,11 @@
 </div>
 
 <script src="assets/supabase-config.js"></script>
+<script src="assets/b2-config.js"></script>
 <script src="assets/mock-backend.js"></script>
 <script type="module">
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
+import { createB2Client } from './assets/b2-client.js';
 
 const isTestMode = !window.SUPABASE_URL || window.SUPABASE_URL.includes('YOUR-PROJECT-REF');
 if(isTestMode){
@@ -98,6 +100,20 @@ if(isTestMode){
   });
 }
 const supabase = isTestMode ? window.createMockClient() : createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+// Media files (photos/videos/music) live in Backblaze B2, not Supabase
+// Storage -- B2 has no per-file size cap. Supabase still holds the
+// structured data (captions, order, settings) via `supabase` above.
+const b2 = isTestMode ? null : createB2Client({
+  keyId: window.B2_KEY_ID,
+  appKey: window.B2_APPLICATION_KEY,
+  bucketId: window.B2_BUCKET_ID,
+  bucketName: window.B2_BUCKET_NAME,
+  downloadUrl: window.B2_DOWNLOAD_URL,
+  s3Endpoint: window.B2_S3_ENDPOINT,
+  region: window.B2_REGION
+});
+const mediaStorage = isTestMode ? supabase.storage : b2.storage;
 
 // ---------- passcode gate ----------
 const gate = document.getElementById('gate');
@@ -128,7 +144,7 @@ if(sessionStorage.getItem('builder_unlocked') === '1'){
 // ---------- main builder logic ----------
 async function publicUrl(path){
   if(isTestMode) return await window.__mockPublicUrlAsync(path);
-  return `${window.SUPABASE_URL}/storage/v1/object/public/media/${path}`;
+  return b2.publicUrl(path);
 }
 function slugFile(name){
   return name.toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/-+/g,'-');
@@ -152,25 +168,29 @@ async function init(){
   refreshStorageUsage();
 }
 
-// --- storage usage callout (free Supabase tier caps at 1GB) ---
-const STORAGE_LIMIT_BYTES = 1024 * 1024 * 1024;
+// --- storage usage callout (soft cap enforced client-side, see b2-config.js) ---
+async function getTotalBucketBytes(){
+  let totalBytes = 0;
+  for(const folder of ['photo', 'video', 'music']){
+    const { data, error } = await mediaStorage.from('media').list(folder, { limit: 1000 });
+    if(error) continue;
+    for(const item of (data || [])){
+      if(item.metadata && typeof item.metadata.size === 'number') totalBytes += item.metadata.size;
+    }
+  }
+  return totalBytes;
+}
 
 async function refreshStorageUsage(){
   const el = document.getElementById('storageUsage');
   if(isTestMode){ el.textContent = ''; return; }
   try{
-    let totalBytes = 0;
-    for(const folder of ['photo', 'video', 'music']){
-      const { data, error } = await supabase.storage.from('media').list(folder, { limit: 1000 });
-      if(error) continue;
-      for(const item of (data || [])){
-        if(item.metadata && typeof item.metadata.size === 'number') totalBytes += item.metadata.size;
-      }
-    }
+    const totalBytes = await getTotalBucketBytes();
+    const limitBytes = window.B2_MAX_BUCKET_BYTES;
     const usedMb = (totalBytes / (1024 * 1024)).toFixed(0);
-    const limitMb = (STORAGE_LIMIT_BYTES / (1024 * 1024)).toFixed(0);
-    const pct = Math.min(100, (totalBytes / STORAGE_LIMIT_BYTES) * 100).toFixed(0);
-    el.textContent = `Storage used: ${usedMb} MB of ${limitMb} MB (${pct}%) on the free Supabase plan.`;
+    const limitMb = (limitBytes / (1024 * 1024)).toFixed(0);
+    const pct = Math.min(100, (totalBytes / limitBytes) * 100).toFixed(0);
+    el.textContent = `Storage used: ${usedMb} MB of ${limitMb} MB (${pct}%).`;
   }catch(e){
     el.textContent = '';
   }
@@ -235,7 +255,7 @@ function wireMusic(){
     if(!file) return;
     dz.querySelector('#musicLabel').textContent = 'Uploading…';
     const path = `music/${Date.now()}-${slugFile(file.name)}`;
-    const { error: upErr } = await supabase.storage.from('media').upload(path, file, { upsert:true });
+    const { error: upErr } = await mediaStorage.from('media').upload(path, file, { upsert:true });
     if(upErr){ dz.querySelector('#musicLabel').textContent = 'Upload failed: ' + upErr.message; return; }
     const { error: setErr } = await supabase.from('settings').update({ music_path: path }).eq('id', 1);
     dz.querySelector('#musicLabel').textContent = setErr ? ('Error: ' + setErr.message) : 'Music uploaded — click to replace';
@@ -318,7 +338,7 @@ async function renderSlideList(){
       const slide = slides.find(s => s.id === id);
       if(!confirm('Remove this photo/video? This cannot be undone.')) return;
       if(slide){
-        await supabase.storage.from('media').remove([slide.storage_path]);
+        await mediaStorage.from('media').remove([slide.storage_path]);
         await supabase.from('slides').delete().eq('id', id);
       }
       await loadSlides();
@@ -374,12 +394,20 @@ function wireDropzone(){
     let succeeded = 0;
     const errors = [];
     let nextOrder = slides.length ? Math.max(...slides.map(s => s.sort_order)) + 1 : 0;
+    let runningTotalBytes = isTestMode ? 0 : await getTotalBucketBytes();
 
     for(const file of files){
       status.textContent = `Uploading ${done+1} of ${files.length}: ${file.name}`;
 
-      if(file.size > 48 * 1024 * 1024){
-        errors.push(`Skipped ${file.name} — over 48MB, the free storage plan's per-file limit is 50MB. Compress it and try again.`);
+      if(file.size > 4.5 * 1024 * 1024 * 1024){
+        errors.push(`Skipped ${file.name} — over 4.5GB, too large to upload in one go. Compress it and try again.`);
+        done++;
+        continue;
+      }
+
+      if(!isTestMode && runningTotalBytes + file.size > window.B2_MAX_BUCKET_BYTES){
+        const limitGb = (window.B2_MAX_BUCKET_BYTES / (1024 * 1024 * 1024)).toFixed(0);
+        errors.push(`Skipped ${file.name} — this would put total storage over the ${limitGb}GB limit.`);
         done++;
         continue;
       }
@@ -387,7 +415,7 @@ function wireDropzone(){
       const type = file.type.startsWith('video/') ? 'video' : 'photo';
       const path = `${type}/${Date.now()}-${slugFile(file.name)}`;
 
-      const { error: upErr } = await supabase.storage.from('media').upload(path, file);
+      const { error: upErr } = await mediaStorage.from('media').upload(path, file);
       if(upErr){
         errors.push(`Failed to upload ${file.name}: ${upErr.message}`);
         done++;
@@ -408,6 +436,7 @@ function wireDropzone(){
         continue;
       }
 
+      runningTotalBytes += file.size;
       succeeded++;
       done++;
     }

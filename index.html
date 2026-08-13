@@ -37,13 +37,24 @@
 <audio id="bgm" loop></audio>
 
 <script src="assets/supabase-config.js"></script>
+<script src="assets/b2-config.js"></script>
 <script src="assets/mock-backend.js"></script>
 <script type="module">
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
+import { createB2Client } from './assets/b2-client.js';
 
 const isTestMode = !window.SUPABASE_URL || window.SUPABASE_URL.includes('YOUR-PROJECT-REF');
 if(isTestMode) document.getElementById('testBanner').style.display = 'block';
 const supabase = isTestMode ? window.createMockClient() : createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+const b2 = isTestMode ? null : createB2Client({
+  keyId: window.B2_KEY_ID,
+  appKey: window.B2_APPLICATION_KEY,
+  bucketId: window.B2_BUCKET_ID,
+  bucketName: window.B2_BUCKET_NAME,
+  s3Endpoint: window.B2_S3_ENDPOINT,
+  region: window.B2_REGION,
+  downloadUrl: window.B2_DOWNLOAD_URL
+});
 
 const stage = document.getElementById('stage');
 const bar = document.getElementById('bar');
@@ -60,7 +71,7 @@ const nextBtn = document.getElementById('nextBtn');
 
 async function publicUrl(path){
   if(isTestMode) return await window.__mockPublicUrlAsync(path);
-  return `${window.SUPABASE_URL}/storage/v1/object/public/media/${path}`;
+  return b2.publicUrl(path);
 }
 function escapeHtml(str){
   const d = document.createElement('div');
