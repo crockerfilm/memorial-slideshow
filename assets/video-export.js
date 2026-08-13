@@ -192,7 +192,7 @@ export async function renderBackupVideo({ settings, slides, publicUrl, onProgres
       '-t', String(durationSec),
       '-r', String(FPS),
       '-pix_fmt', 'yuv420p',
-      '-c:v', 'libx264', '-preset', 'veryfast', ...X264_SINGLE_THREAD,
+      '-c:v', 'libx264', '-preset', 'ultrafast', ...X264_SINGLE_THREAD,
       '-c:a', 'aac', '-shortest',
       segName
     );
@@ -204,14 +204,17 @@ export async function renderBackupVideo({ settings, slides, publicUrl, onProgres
     const inName = `vid${segIdx}.input`;
     ffmpeg.FS('writeFile', inName, new Uint8Array(await fetchBytesWithRetry(url, { timeoutMs: 120000 })));
     const segName = `seg${segIdx}.mp4`;
-    const filter = "split=2[bg][fg];[bg]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,gblur=sigma=20,eq=brightness=-0.35[bgb];[fg]scale=1920:1080:force_original_aspect_ratio=decrease[fgs];[bgb][fgs]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]";
+    // Plain scale+pad, no blur treatment -- gblur is by far the most
+    // expensive filter in the graph and this runs per source video, not
+    // per still, so it's the main cost driver for video-heavy shows.
+    const filter = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p[v]";
     const args = ['-i', inName, '-filter_complex', filter, '-map', '[v]'];
     if(audioEnabled){
       args.push('-map', '0:a?');
     } else {
       args.push('-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-map', '1:a', '-shortest');
     }
-    args.push('-r', String(FPS), '-c:v', 'libx264', '-preset', 'veryfast', ...X264_SINGLE_THREAD, '-c:a', 'aac', segName);
+    args.push('-r', String(FPS), '-c:v', 'libx264', '-preset', 'ultrafast', ...X264_SINGLE_THREAD, '-c:a', 'aac', segName);
     await ffmpeg.run(...args);
     segmentFiles.push(segName);
     segIdx++;
