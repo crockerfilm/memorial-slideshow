@@ -117,14 +117,45 @@ async function drawPhotoFrame(ctx, img, caption){
   }
 }
 
+// Plain fetch()/<img>/<video crossOrigin> loads have no timeout -- if a
+// request stalls (connection contention with the builder's own thumbnail
+// list, worsened by ffmpeg.wasm blocking the main thread while encoding),
+// they can hang forever with no error and no way to recover. This retries
+// a few times with a hard per-attempt timeout instead.
+async function fetchBytesWithRetry(url, { attempts = 4, timeoutMs = 20000 } = {}){
+  let lastErr;
+  for(let i = 0; i < attempts; i++){
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try{
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.arrayBuffer();
+    }catch(e){
+      clearTimeout(timer);
+      lastErr = e;
+      await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+  throw new Error(`Failed to fetch ${url} after ${attempts} attempts: ${lastErr && lastErr.message}`);
+}
+
 async function loadImage(url){
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = url;
-  });
+  const bytes = await fetchBytesWithRetry(url);
+  const blobUrl = URL.createObjectURL(new Blob([bytes]));
+  try{
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = blobUrl;
+    });
+  }finally{
+    // Revoked after the image element has decoded it into a bitmap, not
+    // right after -- drawImage() needs the blob URL to still resolve.
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+  }
 }
 
 export async function renderBackupVideo({ settings, slides, publicUrl, onProgress }){
@@ -171,7 +202,7 @@ export async function renderBackupVideo({ settings, slides, publicUrl, onProgres
 
   async function videoSegment(url, audioEnabled){
     const inName = `vid${segIdx}.input`;
-    ffmpeg.FS('writeFile', inName, await fetchFile(url));
+    ffmpeg.FS('writeFile', inName, new Uint8Array(await fetchBytesWithRetry(url, { timeoutMs: 120000 })));
     const segName = `seg${segIdx}.mp4`;
     const filter = "split=2[bg][fg];[bg]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,gblur=sigma=20,eq=brightness=-0.35[bgb];[fg]scale=1920:1080:force_original_aspect_ratio=decrease[fgs];[bgb][fgs]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]";
     const args = ['-i', inName, '-filter_complex', filter, '-map', '[v]'];
@@ -214,7 +245,7 @@ export async function renderBackupVideo({ settings, slides, publicUrl, onProgres
   if(settings.music_path){
     report('Mixing in background music…');
     const musicUrl = await publicUrl(settings.music_path);
-    ffmpeg.FS('writeFile', 'music.input', await fetchFile(musicUrl));
+    ffmpeg.FS('writeFile', 'music.input', new Uint8Array(await fetchBytesWithRetry(musicUrl, { timeoutMs: 60000 })));
     await ffmpeg.run(
       '-i', 'concatenated.mp4', '-i', 'music.input',
       '-filter_complex', '[1:a]aloop=loop=-1:size=2000000000,volume=0.5[bgm];[0:a][bgm]amix=inputs=2:duration=first[aout]',
