@@ -171,6 +171,15 @@ function escapeHtml(str){
   d.innerText = str || '';
   return d.innerHTML;
 }
+function formatBytesPerSec(bytesPerSec){
+  if(bytesPerSec >= 1024 * 1024) return (bytesPerSec / (1024 * 1024)).toFixed(1) + ' MB/s';
+  return (bytesPerSec / 1024).toFixed(0) + ' KB/s';
+}
+function formatEta(sec){
+  if(sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}m ${s}s`;
+}
 
 let slides = [];
 let settingsDebounce = null;
@@ -474,7 +483,18 @@ function wireDropzone(){
       const type = file.type.startsWith('video/') ? 'video' : 'photo';
       const path = `${type}/${Date.now()}-${slugFile(file.name)}`;
 
-      const { error: upErr } = await mediaStorage.from('media').upload(path, file);
+      const fileStartTime = Date.now();
+      const { error: upErr } = await mediaStorage.from('media').upload(path, file, {
+        onProgress: ({ loaded, total }) => {
+          const elapsedSec = (Date.now() - fileStartTime) / 1000;
+          const speed = elapsedSec > 0.2 ? loaded / elapsedSec : 0; // ignore the first instant, too noisy
+          const pct = total ? Math.round((loaded / total) * 100) : 0;
+          const etaSec = speed > 0 ? Math.round((total - loaded) / speed) : null;
+          const speedText = speed > 0 ? ` — ${formatBytesPerSec(speed)}` : '';
+          const etaText = etaSec != null ? `, ETA ${formatEta(etaSec)}` : '';
+          status.textContent = `Uploading ${done+1} of ${files.length}: ${file.name} (${pct}%${speedText}${etaText})`;
+        }
+      });
       if(upErr){
         errors.push(`Failed to upload ${file.name}: ${upErr.message}`);
         done++;

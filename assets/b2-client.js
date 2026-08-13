@@ -38,18 +38,40 @@ export function createB2Client(cfg){
     storage: {
       from(){
         return {
-          async upload(path, file){
+          async upload(path, file, opts){
+            const onProgress = opts && opts.onProgress;
             try{
-              const res = await client.fetch(`${base}/${encodePath(path)}`, {
+              const url = `${base}/${encodePath(path)}`;
+              // fetch() has no upload progress event, so the request is
+              // signed with aws4fetch but actually sent via XHR, which does
+              // support byte-level progress via xhr.upload.onprogress.
+              const signedReq = await client.sign(url, {
                 method: 'PUT',
                 headers: { 'Content-Type': file.type || 'application/octet-stream' },
                 body: file
               });
-              if(!res.ok){
-                const text = await res.text().catch(() => '');
-                return { data: null, error: { message: `Upload failed (${res.status}): ${text.slice(0, 200)}` } };
-              }
-              return { data: { path }, error: null };
+              const result = await new Promise((resolve) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('PUT', signedReq.url);
+                signedReq.headers.forEach((value, key) => {
+                  if(key.toLowerCase() !== 'host') xhr.setRequestHeader(key, value);
+                });
+                if(onProgress){
+                  xhr.upload.onprogress = (e) => {
+                    if(e.lengthComputable) onProgress({ loaded: e.loaded, total: e.total });
+                  };
+                }
+                xhr.onload = () => {
+                  if(xhr.status >= 200 && xhr.status < 300){
+                    resolve({ data: { path }, error: null });
+                  } else {
+                    resolve({ data: null, error: { message: `Upload failed (${xhr.status}): ${xhr.responseText.slice(0, 200)}` } });
+                  }
+                };
+                xhr.onerror = () => resolve({ data: null, error: { message: 'Upload failed: network error' } });
+                xhr.send(file);
+              });
+              return result;
             }catch(e){
               return { data: null, error: { message: e.message } };
             }
