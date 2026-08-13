@@ -404,7 +404,7 @@ function wireDropzone(){
         continue;
       }
 
-      await supabase.from('slides').insert({
+      const { error: insErr } = await supabase.from('slides').insert({
         storage_path: path,
         type,
         caption: '',
@@ -412,6 +412,11 @@ function wireDropzone(){
         audio_enabled: true,
         filename: file.name
       });
+      if(insErr){
+        status.textContent = `Uploaded ${file.name} but failed to save it: ${insErr.message}`;
+        done++;
+        continue;
+      }
 
       done++;
     }
