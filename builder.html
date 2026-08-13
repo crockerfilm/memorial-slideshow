@@ -72,16 +72,17 @@
   <div class="card">
     <h2>Offline backup video</h2>
     <p class="lede" style="margin:0 0 14px 0;">
-      In case there's no internet at the venue, this records the slideshow
-      playing through once (title card to closing card) and downloads it as
-      a regular video file you can save to a laptop or USB drive as a
-      backup. It takes as long as the show itself to generate — a browser
-      tab will open, ask to record itself, then play the whole thing
-      through before the video downloads automatically. Needs a
-      Chrome-based browser (Chrome or Edge). Test the downloaded file plays
-      on whatever device you'll actually use as backup, ahead of time.
+      In case there's no internet at the venue, this renders the slideshow
+      into a regular 1920x1080 video file (title card to closing card) you
+      can save to a laptop or USB drive as a backup. Rendering happens in
+      this tab and is usually much faster than the show's actual runtime,
+      but can still take a few minutes for a lot of photos/video — leave
+      the tab open until it finishes and downloads automatically. Test the
+      downloaded file plays on whatever device you'll actually use as
+      backup, ahead of time.
     </p>
     <button id="exportVideoBtn" type="button" style="background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;">Export backup video</button>
+    <div class="savingNote" id="exportStatus" style="margin-top:8px;">&nbsp;</div>
   </div>
 
   <div class="card">
@@ -104,6 +105,7 @@
 <script type="module">
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
 import { createB2Client } from './assets/b2-client.js';
+import { renderBackupVideo } from './assets/video-export.js';
 
 const isTestMode = !window.SUPABASE_URL || window.SUPABASE_URL.includes('YOUR-PROJECT-REF');
 if(isTestMode){
@@ -181,8 +183,47 @@ async function init(){
   wireDropzone();
   wireMusic();
   refreshStorageUsage();
-  document.getElementById('exportVideoBtn').addEventListener('click', () => {
-    window.open('index.html?export=1', '_blank', 'width=1920,height=1080');
+  wireExportVideo();
+}
+
+function wireExportVideo(){
+  const btn = document.getElementById('exportVideoBtn');
+  const statusEl = document.getElementById('exportStatus');
+  btn.addEventListener('click', async () => {
+    if(isTestMode){
+      statusEl.textContent = 'Backup video export needs a live Supabase/B2 backend, not test mode.';
+      return;
+    }
+    btn.disabled = true;
+    try{
+      const { data: settingsRow } = await supabase.from('settings').select('*').eq('id', 1).single();
+      const { data: slideRows } = await supabase.from('slides').select('*').order('sort_order', { ascending: true });
+      if(!slideRows || slideRows.length === 0){
+        statusEl.textContent = 'Add some photos/videos first.';
+        return;
+      }
+      const blob = await renderBackupVideo({
+        settings: settingsRow || {},
+        slides: slideRows,
+        publicUrl,
+        onProgress: (msg) => { statusEl.textContent = msg; }
+      });
+      const stamp = new Date().toISOString().slice(0, 10);
+      const namePart = (settingsRow?.title || 'slideshow').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-');
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${namePart}-backup-${stamp}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      statusEl.textContent = `Done — downloaded as ${a.download}.`;
+    }catch(e){
+      statusEl.textContent = 'Export failed: ' + e.message;
+    }finally{
+      btn.disabled = false;
+    }
   });
 }
 
