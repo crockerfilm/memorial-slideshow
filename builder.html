@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Build the slideshow</title>
 <link rel="stylesheet" href="assets/app.css">
+<script src="coi-serviceworker.js"></script>
 </head>
 <body>
 
@@ -102,6 +103,7 @@
 <script src="assets/supabase-config.js"></script>
 <script src="assets/b2-config.js"></script>
 <script src="assets/mock-backend.js"></script>
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
 <script type="module">
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
 import { createB2Client } from './assets/b2-client.js';

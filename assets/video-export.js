@@ -8,8 +8,13 @@
 // the video in real time again, defeating the point). Segments are
 // concatenated with a stream copy (no re-encode) and background music is
 // mixed in on top in one final pass.
-import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12/+esm';
-import { toBlobURL } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12/+esm';
+// Uses ffmpeg.wasm 0.11.x (loaded as a plain global <script> in builder.html,
+// see assets/ffmpeg-0.11.js), not the newer 0.12.x package. 0.12.x is built
+// for bundler-based apps and loads its core via a same-origin Web Worker,
+// which has no clean way to work from a plain static page (blob-wrapping
+// the worker script still breaks its own internal relative imports). 0.11.x
+// loads its core via a normal script injection instead, which cross-origin
+// CDN scripts have always been able to do -- no worker, no CORS gymnastics.
 
 const W = 1920, H = 1080, FPS = 30;
 const COLORS = { bg: '#0a0a0a', ink: '#e9e5dc', inkDim: '#9c968a', accent: '#b08d57' };
@@ -126,13 +131,15 @@ export async function renderBackupVideo({ settings, slides, publicUrl, onProgres
   const report = (msg) => onProgress && onProgress(msg);
 
   report('Loading video engine…');
-  const CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12/dist/umd';
-  const ffmpeg = new FFmpeg();
-  await ffmpeg.load({
-    coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, 'text/javascript'),
-    wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm'),
-    classWorkerURL: await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12/dist/esm/worker.js', 'text/javascript')
-  });
+  const { createFFmpeg, fetchFile } = window.FFmpeg;
+  const ffmpeg = createFFmpeg({ log: true });
+  await ffmpeg.load();
+  // The default core's multi-threaded libx264 path hits a real emscripten
+  // bug ("function signature mismatch" inside a pthread worker), reproduced
+  // consistently. Forcing libx264 (and ffmpeg's own codec threading) down
+  // to 1 thread avoids that code path entirely -- slower, but this export
+  // only runs once, unattended, so that trade is fine.
+  const X264_SINGLE_THREAD = ['-threads', '1', '-x264-params', 'threads=1'];
 
   const canvas = document.createElement('canvas');
   canvas.width = W;
@@ -146,26 +153,25 @@ export async function renderBackupVideo({ settings, slides, publicUrl, onProgres
     await drawFn();
     const blob = await canvasToBlob(canvas);
     const name = `still${segIdx}.png`;
-    ffmpeg.writeFile(name, new Uint8Array(await blob.arrayBuffer()));
+    ffmpeg.FS('writeFile', name, await fetchFile(blob));
     const segName = `seg${segIdx}.mp4`;
-    await ffmpeg.exec([
+    await ffmpeg.run(
       '-loop', '1', '-i', name,
       '-f', 'lavfi', '-i', `anullsrc=r=44100:cl=stereo`,
       '-t', String(durationSec),
       '-r', String(FPS),
       '-pix_fmt', 'yuv420p',
-      '-c:v', 'libx264', '-preset', 'veryfast',
+      '-c:v', 'libx264', '-preset', 'veryfast', ...X264_SINGLE_THREAD,
       '-c:a', 'aac', '-shortest',
       segName
-    ]);
+    );
     segmentFiles.push(segName);
     segIdx++;
   }
 
   async function videoSegment(url, audioEnabled){
-    const data = await (await fetch(url)).arrayBuffer();
     const inName = `vid${segIdx}.input`;
-    ffmpeg.writeFile(inName, new Uint8Array(data));
+    ffmpeg.FS('writeFile', inName, await fetchFile(url));
     const segName = `seg${segIdx}.mp4`;
     const filter = "split=2[bg][fg];[bg]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,gblur=sigma=20,eq=brightness=-0.35[bgb];[fg]scale=1920:1080:force_original_aspect_ratio=decrease[fgs];[bgb][fgs]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]";
     const args = ['-i', inName, '-filter_complex', filter, '-map', '[v]'];
@@ -174,8 +180,8 @@ export async function renderBackupVideo({ settings, slides, publicUrl, onProgres
     } else {
       args.push('-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-map', '1:a', '-shortest');
     }
-    args.push('-r', String(FPS), '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', segName);
-    await ffmpeg.exec(args);
+    args.push('-r', String(FPS), '-c:v', 'libx264', '-preset', 'veryfast', ...X264_SINGLE_THREAD, '-c:a', 'aac', segName);
+    await ffmpeg.run(...args);
     segmentFiles.push(segName);
     segIdx++;
   }
@@ -201,26 +207,25 @@ export async function renderBackupVideo({ settings, slides, publicUrl, onProgres
 
   report('Stitching segments together…');
   const listContent = segmentFiles.map(f => `file '${f}'`).join('\n');
-  ffmpeg.writeFile('list.txt', listContent);
-  await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'concatenated.mp4']);
+  ffmpeg.FS('writeFile', 'list.txt', new TextEncoder().encode(listContent));
+  await ffmpeg.run('-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'concatenated.mp4');
 
   let finalName = 'concatenated.mp4';
   if(settings.music_path){
     report('Mixing in background music…');
     const musicUrl = await publicUrl(settings.music_path);
-    const musicData = await (await fetch(musicUrl)).arrayBuffer();
-    ffmpeg.writeFile('music.input', new Uint8Array(musicData));
-    await ffmpeg.exec([
+    ffmpeg.FS('writeFile', 'music.input', await fetchFile(musicUrl));
+    await ffmpeg.run(
       '-i', 'concatenated.mp4', '-i', 'music.input',
       '-filter_complex', '[1:a]aloop=loop=-1:size=2000000000,volume=0.5[bgm];[0:a][bgm]amix=inputs=2:duration=first[aout]',
       '-map', '0:v', '-map', '[aout]',
       '-c:v', 'copy', '-c:a', 'aac', '-shortest',
       'final.mp4'
-    ]);
+    );
     finalName = 'final.mp4';
   }
 
   report('Finishing up…');
-  const outData = await ffmpeg.readFile(finalName);
+  const outData = ffmpeg.FS('readFile', finalName);
   return new Blob([outData.buffer], { type: 'video/mp4' });
 }
