@@ -70,6 +70,21 @@
   </div>
 
   <div class="card">
+    <h2>Offline backup video</h2>
+    <p class="lede" style="margin:0 0 14px 0;">
+      In case there's no internet at the venue, this records the slideshow
+      playing through once (title card to closing card) and downloads it as
+      a regular video file you can save to a laptop or USB drive as a
+      backup. It takes as long as the show itself to generate — a browser
+      tab will open, ask to record itself, then play the whole thing
+      through before the video downloads automatically. Needs a
+      Chrome-based browser (Chrome or Edge). Test the downloaded file plays
+      on whatever device you'll actually use as backup, ahead of time.
+    </p>
+    <button id="exportVideoBtn" type="button" style="background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;">Export backup video</button>
+  </div>
+
+  <div class="card">
     <h2>Photos &amp; videos (<span id="slideCount">0</span>)</h2>
     <div class="savingNote" id="storageUsage" style="margin-bottom:12px;">&nbsp;</div>
     <div id="dropzone">
@@ -166,6 +181,9 @@ async function init(){
   wireDropzone();
   wireMusic();
   refreshStorageUsage();
+  document.getElementById('exportVideoBtn').addEventListener('click', () => {
+    window.open('index.html?export=1', '_blank', 'width=1920,height=1080');
+  });
 }
 
 // --- storage usage callout (soft cap enforced client-side, see b2-config.js) ---

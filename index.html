@@ -18,6 +18,10 @@
   TEST MODE — showing sample data only, nothing here is saved. Fill in Supabase keys in assets/supabase-config.js to go live.
 </div>
 
+<div id="exportBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:60;background:#2d6ca8;color:#fff;text-align:center;font-size:13px;padding:6px;font-family:sans-serif;letter-spacing:.02em;">
+  Recording backup video&hellip; do not close this tab. It will download automatically when the show finishes.
+</div>
+
 <progress id="bar" value="0" max="100"></progress>
 <div id="stage"></div>
 
@@ -55,6 +59,8 @@ const b2 = isTestMode ? null : createB2Client({
   region: window.B2_REGION,
   downloadUrl: window.B2_DOWNLOAD_URL
 });
+
+const isExportMode = new URLSearchParams(location.search).get('export') === '1';
 
 const stage = document.getElementById('stage');
 const bar = document.getElementById('bar');
@@ -108,6 +114,16 @@ function buildItems(){
 async function load(){
   const { data: settingsRow } = await supabase.from('settings').select('*').eq('id', 1).single();
   settings = settingsRow || {};
+  if(isExportMode){
+    // A backup video is one deterministic pass through the show, not an
+    // endless loop -- override in memory only, never write these back.
+    settings.loop_enabled = false;
+    settings.random_order = false;
+    document.getElementById('exportBanner').style.display = 'block';
+    document.getElementById('hud').style.display = 'none';
+    document.getElementById('bar').style.display = 'none';
+    document.querySelector('#startOverlay .hint').textContent = 'Click once to start recording the backup video';
+  }
 
   const { data: slideRows, error } = await supabase
     .from('slides')
@@ -302,6 +318,7 @@ function advance(isAuto){
     clearTimers();
     playing = false;
     playBtn.textContent = 'Play';
+    if(isExportMode) setTimeout(stopExportRecording, 1500); // let the closing card's last second of audio/video settle
     return; // stay put on the closing card instead of restarting
   }
 
@@ -352,8 +369,60 @@ document.addEventListener('keydown', (e) => {
   if(e.key === 'f' || e.key === 'F') fsBtn.click();
   if(e.key === 'm' || e.key === 'M') muteBtn.click();
 });
+// --- offline backup video export (records this tab itself while it plays
+// through the show once, then auto-downloads) ---
+let exportRecorder = null;
+let exportChunks = [];
+let exportStream = null;
+let exportMimeType = '';
+
+async function startExportRecording(){
+  const constraints = {
+    video: { width: 1920, height: 1080, frameRate: 30 },
+    audio: true,
+    preferCurrentTab: true // Chrome: skips the picker and captures this tab directly
+  };
+  try{
+    exportStream = await navigator.mediaDevices.getDisplayMedia(constraints);
+  }catch(e){
+    alert('Could not start recording: ' + e.message + '\n\nThis feature needs a Chrome-based browser (Chrome, Edge) with screen/tab recording permission.');
+    return;
+  }
+  const candidates = ['video/mp4;codecs=h264,aac', 'video/webm;codecs=vp9,opus', 'video/webm'];
+  exportMimeType = candidates.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  exportChunks = [];
+  exportRecorder = new MediaRecorder(exportStream, exportMimeType ? { mimeType: exportMimeType } : {});
+  exportRecorder.ondataavailable = (e) => { if(e.data.size > 0) exportChunks.push(e.data); };
+  exportRecorder.start();
+  // If the person stops sharing via the browser's own "Stop sharing" bar,
+  // treat that the same as reaching the closing card.
+  exportStream.getVideoTracks()[0].addEventListener('ended', stopExportRecording);
+}
+
+function stopExportRecording(){
+  if(!exportRecorder || exportRecorder.state === 'inactive') return;
+  exportRecorder.addEventListener('stop', () => {
+    const blob = new Blob(exportChunks, { type: exportMimeType || 'video/webm' });
+    const ext = exportMimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
+    const stamp = new Date().toISOString().slice(0, 10);
+    const namePart = (settings.title || 'slideshow').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${namePart}-backup-${stamp}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    document.getElementById('exportBanner').textContent = `Done — backup video downloaded as ${a.download}.`;
+  }, { once: true });
+  exportRecorder.stop();
+  if(exportStream) exportStream.getTracks().forEach(t => t.stop());
+}
+
 startBtn.addEventListener('click', async () => {
   startOverlay.style.display = 'none';
+  if(isExportMode) await startExportRecording();
   if(settings.music_path){
     bgm.src = await publicUrl(settings.music_path);
     bgm.volume = 0.5;
