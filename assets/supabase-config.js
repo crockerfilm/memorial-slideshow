@@ -3,8 +3,8 @@
 // safe to commit to a public GitHub repo. Access control is handled by the
 // Row Level Security policies in supabase/schema.sql, not by hiding these.
 
-window.SUPABASE_URL = "https://YOUR-PROJECT-REF.supabase.co";
-window.SUPABASE_ANON_KEY = "YOUR-ANON-PUBLIC-KEY";
+window.SUPABASE_URL = "https://myipuujngpdlvkwoszie.supabase.co";
+window.SUPABASE_ANON_KEY = "sb_publishable_M9oNvZOM6vzrpfR9GOxkLw_WdWwoKVA";
 
 // Passcode required to open the builder (upload/reorder) page.
 // This is a soft gate, not real security -- anyone who has this value and
