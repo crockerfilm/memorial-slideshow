@@ -383,13 +383,15 @@ function wireDropzone(){
     const files = [...fileList];
     if(files.length === 0) return;
     let done = 0;
+    let succeeded = 0;
+    const errors = [];
     let nextOrder = slides.length ? Math.max(...slides.map(s => s.sort_order)) + 1 : 0;
 
     for(const file of files){
       status.textContent = `Uploading ${done+1} of ${files.length}: ${file.name}`;
 
       if(file.size > 48 * 1024 * 1024){
-        status.textContent = `Skipped ${file.name} — over 48MB, the free storage plan's per-file limit is 50MB. Compress it and try again.`;
+        errors.push(`Skipped ${file.name} — over 48MB, the free storage plan's per-file limit is 50MB. Compress it and try again.`);
         done++;
         continue;
       }
@@ -399,7 +401,7 @@ function wireDropzone(){
 
       const { error: upErr } = await supabase.storage.from('media').upload(path, file);
       if(upErr){
-        status.textContent = `Failed to upload ${file.name}: ${upErr.message}`;
+        errors.push(`Failed to upload ${file.name}: ${upErr.message}`);
         done++;
         continue;
       }
@@ -413,15 +415,18 @@ function wireDropzone(){
         filename: file.name
       });
       if(insErr){
-        status.textContent = `Uploaded ${file.name} but failed to save it: ${insErr.message}`;
+        errors.push(`Uploaded ${file.name} but failed to save it: ${insErr.message}`);
         done++;
         continue;
       }
 
+      succeeded++;
       done++;
     }
 
-    status.textContent = `Done — uploaded ${files.length} file${files.length === 1 ? '' : 's'}.`;
+    status.textContent = errors.length
+      ? `Uploaded ${succeeded} of ${files.length} file${files.length === 1 ? '' : 's'}. ${errors.join(' ')}`
+      : `Done — uploaded ${files.length} file${files.length === 1 ? '' : 's'}.`;
     input.value = '';
     await loadSlides();
   }
