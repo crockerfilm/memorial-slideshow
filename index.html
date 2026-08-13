@@ -76,7 +76,6 @@ let playing = true;
 let timer = null;
 let barTimer = null;
 let videoSafetyTimer = null;
-const DEFAULT_DUR = 6000;
 
 function shuffle(arr){
   const a = [...arr];
@@ -227,7 +226,7 @@ async function renderCurrent(){
   else if(item.kind === 'closing'){ el = renderClosingCard(); durationMs = 8000; }
   else {
     el = await renderMediaSlide(item.data);
-    durationMs = item.data.type === 'video' ? null : DEFAULT_DUR;
+    durationMs = item.data.type === 'video' ? null : (settings.photo_seconds || 6) * 1000;
   }
 
   // If the user navigated again while this slide's media was still

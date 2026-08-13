@@ -9,6 +9,7 @@ alter table if exists slides add column if not exists audio_enabled boolean not 
 alter table if exists slides add column if not exists filename text not null default '';
 alter table if exists settings add column if not exists loop_enabled boolean not null default true;
 alter table if exists settings add column if not exists random_order boolean not null default false;
+alter table if exists settings add column if not exists photo_seconds integer not null default 6;
 
 -- 1. Table that stores each photo/video slot and its order
 create table if not exists slides (
@@ -57,6 +58,7 @@ create table if not exists settings (
   music_path text not null default '',
   loop_enabled boolean not null default true,
   random_order boolean not null default false,
+  photo_seconds integer not null default 6,
   constraint single_row check (id = 1)
 );
 

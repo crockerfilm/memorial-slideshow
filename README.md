@@ -155,28 +155,15 @@ and anything that doesn't perfectly fill the screen (a square photo, a
 panorama, a vertical phone video) gets a softly blurred, darkened copy of
 itself filling the space behind it instead of plain black bars.
 
-**Loop and random order.** In the builder's "Playback" card: "Loop back
-to the title card" is on by default — turn it off and the show plays
-through once and stops on the closing card instead of restarting.
-"Random order" reshuffles the photo/video order each time it loops back
-to the start (the title and closing cards always stay fixed at the very
-start and end either way).
-
-**Save and load a project.** The "Save & load project" card exports
-everything except the actual photo/video files themselves — title card
-text, order, captions, per-video audio settings, loop/random settings —
-to a downloadable `.json` file. This is meant as a backup/checkpoint, or
-a way to move a project to a different Supabase backend later. Loading a
-project file **replaces** whatever's currently in the builder, so it'll
-ask you to confirm first.
-
-Because the actual media files aren't in that export, if you load it
-somewhere those files aren't already uploaded (a fresh Supabase project,
-for instance), it'll show you which ones are missing and let you relink
-them — drop the original photos/videos back in and it matches them to
-the right slot by filename automatically, or pick a file manually for
-anything that doesn't match. Nothing in the show breaks while a slide is
-unrelinked; it just shows as a placeholder until you get to it.
+**Loop, random order, and timing.** In the builder's "Playback" card:
+"Loop back to the title card" is on by default — turn it off and the
+show plays through once and stops on the closing card instead of
+restarting. "Random order" reshuffles the photo/video order each time it
+loops back to the start (the title and closing cards always stay fixed
+at the very start and end either way). "Seconds per photo" controls how
+long each photo stays on screen before crossfading to the next one
+(videos always play for their own full length regardless of this
+setting).
 
 **Limits worth knowing:**
 - Free Supabase storage caps at 1GB total and 50MB per individual file.

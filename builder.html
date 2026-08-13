@@ -55,6 +55,10 @@
       <input type="checkbox" id="fRandomOrder">
       Random order (reshuffled each time it loops)
     </label>
+    <div class="field" style="margin-top:14px;">
+      <label>Seconds per photo</label>
+      <input type="number" id="fPhotoSeconds" min="1" max="60" step="1" style="max-width:100px;">
+    </div>
   </div>
 
   <div class="card">
@@ -63,39 +67,6 @@
       <span id="musicLabel">Click to upload an MP3</span>
     </div>
     <input type="file" id="musicInput" accept="audio/*" style="display:none;">
-  </div>
-
-  <div class="card">
-    <h2>Save &amp; load project</h2>
-    <p class="lede" style="margin:0 0 14px 0;">
-      Export everything here (title card, order, captions, audio settings)
-      to a file you can keep as a backup, or load onto a different device
-      or backend. It doesn't include the actual photo/video files
-      themselves — if you load it somewhere those files aren't already
-      uploaded, you'll be asked to relink them from your computer.
-    </p>
-    <button id="exportProjectBtn" type="button" style="background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;">Export project (.json)</button>
-    <label for="importProjectInput" style="display:inline-block;margin-left:10px;background:transparent;border:1px solid #333;color:var(--ink-dim);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;">Load project (.json)</label>
-    <input type="file" id="importProjectInput" accept="application/json" style="display:none;">
-    <div class="savingNote" id="projectStatus" style="margin-top:8px;">&nbsp;</div>
-  </div>
-
-  <div class="card" id="relinkCard" style="display:none;">
-    <h2>Relink missing media (<span id="missingCount">0</span>)</h2>
-    <p class="lede" style="margin:0 0 14px 0;">
-      This project references files that aren't uploaded to this backend
-      yet. Drop the original photos/videos below — filenames are matched
-      automatically — or pick a file individually for anything left over.
-    </p>
-    <div id="relinkDropzone" style="border:2px dashed #333;border-radius:8px;padding:24px;text-align:center;color:var(--ink-dim);cursor:pointer;font-size:13px;">
-      <strong>Drop matching files here</strong><br>or click to choose
-    </div>
-    <input type="file" id="relinkFileInput" multiple style="display:none;">
-    <ul id="relinkList" style="list-style:none;margin:14px 0 0 0;padding:0;"></ul>
-    <div style="margin-top:14px;">
-      <button id="finishImportBtn" type="button" style="background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;">Finish import</button>
-      <button id="cancelImportBtn" type="button" class="danger" style="background:transparent;border:1px solid var(--danger);color:var(--danger);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px;margin-left:8px;">Cancel import</button>
-    </div>
   </div>
 
   <div class="card">
@@ -158,20 +129,6 @@ async function publicUrl(path){
   if(isTestMode) return await window.__mockPublicUrlAsync(path);
   return `${window.SUPABASE_URL}/storage/v1/object/public/media/${path}`;
 }
-async function mediaExists(path){
-  if(!path) return false;
-  if(isTestMode){
-    const url = await window.__mockPublicUrlAsync(path);
-    return !!url;
-  }
-  try{
-    const url = await publicUrl(path);
-    const res = await fetch(url, { method: 'HEAD' });
-    return res.ok;
-  }catch(e){
-    return false;
-  }
-}
 function slugFile(name){
   return name.toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/-+/g,'-');
 }
@@ -191,8 +148,6 @@ async function init(){
   wirePlaybackToggles();
   wireDropzone();
   wireMusic();
-  wireProjectExportImport();
-  wireRelinkDropzone();
 }
 
 // --- settings (title card / closing / music / playback) ---
@@ -205,6 +160,7 @@ async function loadSettings(){
   document.getElementById('fClosing').value = s.closing_message || '';
   document.getElementById('fLoop').checked = s.loop_enabled !== false;
   document.getElementById('fRandomOrder').checked = !!s.random_order;
+  document.getElementById('fPhotoSeconds').value = s.photo_seconds || 6;
   document.getElementById('musicLabel').textContent = s.music_path
     ? 'Music uploaded — click to replace'
     : 'Click to upload an MP3';
@@ -216,6 +172,11 @@ function wirePlaybackToggles(){
   });
   document.getElementById('fRandomOrder').addEventListener('change', async (e) => {
     await supabase.from('settings').update({ random_order: e.target.checked }).eq('id', 1);
+  });
+  document.getElementById('fPhotoSeconds').addEventListener('change', async (e) => {
+    const val = Math.max(1, Math.min(60, parseInt(e.target.value, 10) || 6));
+    e.target.value = val;
+    await supabase.from('settings').update({ photo_seconds: val }).eq('id', 1);
   });
 }
 
@@ -432,246 +393,6 @@ function wireDropzone(){
   }
 }
 
-// --- save & load project (export/import with media relinking) ---
-let pendingImport = null; // { settings, slides: [{ storage_path, type, caption, sort_order, audio_enabled, filename, _exists }] }
-
-function wireProjectExportImport(){
-  document.getElementById('exportProjectBtn').addEventListener('click', exportProject);
-  document.getElementById('importProjectInput').addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    e.target.value = '';
-    if(file) await startImport(file);
-  });
-  document.getElementById('finishImportBtn').addEventListener('click', async () => {
-    const stillMissing = missingItems();
-    if(stillMissing.length > 0){
-      if(!confirm(`${stillMissing.length} file(s) are still unmatched and will show as broken placeholders until you relink them later. Finish anyway?`)) return;
-    }
-    await finalizeImport();
-  });
-  document.getElementById('cancelImportBtn').addEventListener('click', () => {
-    pendingImport = null;
-    document.getElementById('relinkCard').style.display = 'none';
-    document.getElementById('projectStatus').textContent = 'Import cancelled.';
-  });
-}
-
-async function exportProject(){
-  const statusEl = document.getElementById('projectStatus');
-  statusEl.textContent = 'Preparing export…';
-
-  const { data: settingsRow } = await supabase.from('settings').select('*').eq('id', 1).single();
-  const { data: slideRows } = await supabase.from('slides').select('*').order('sort_order', { ascending: true });
-
-  const payload = {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    settings: {
-      title: settingsRow.title || '',
-      subtitle: settingsRow.subtitle || '',
-      dates: settingsRow.dates || '',
-      closing_message: settingsRow.closing_message || '',
-      music_path: settingsRow.music_path || '',
-      loop_enabled: settingsRow.loop_enabled !== false,
-      random_order: !!settingsRow.random_order
-    },
-    slides: (slideRows || []).map(s => ({
-      storage_path: s.storage_path,
-      type: s.type,
-      caption: s.caption || '',
-      sort_order: s.sort_order,
-      audio_enabled: s.audio_enabled !== false,
-      filename: s.filename || s.storage_path.split('/').pop()
-    }))
-  };
-
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  const stamp = new Date().toISOString().slice(0, 10);
-  const namePart = slugFile(settingsRow.title || 'slideshow');
-  a.download = `${namePart}-project-${stamp}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  statusEl.textContent = `Exported ${payload.slides.length} slide(s) as ${a.download}.`;
-}
-
-async function startImport(file){
-  const statusEl = document.getElementById('projectStatus');
-  let parsed;
-  try{
-    parsed = JSON.parse(await file.text());
-  }catch(e){
-    statusEl.textContent = 'That file is not valid JSON — could not read it as a project export.';
-    return;
-  }
-  if(!parsed || !Array.isArray(parsed.slides) || !parsed.settings){
-    statusEl.textContent = 'That file does not look like a slideshow project export.';
-    return;
-  }
-
-  if(!confirm('Loading a project replaces everything currently in this builder — all current photos, videos, and settings. This cannot be undone. Continue?')) return;
-
-  statusEl.textContent = 'Checking which files are already available…';
-  const checked = await Promise.all(parsed.slides.map(async (s) => ({
-    storage_path: s.storage_path,
-    type: s.type === 'video' ? 'video' : 'photo',
-    caption: s.caption || '',
-    sort_order: typeof s.sort_order === 'number' ? s.sort_order : 0,
-    audio_enabled: s.audio_enabled !== false,
-    filename: s.filename || (s.storage_path || '').split('/').pop() || 'untitled',
-    _exists: await mediaExists(s.storage_path)
-  })));
-
-  pendingImport = { settings: parsed.settings, slides: checked };
-  statusEl.textContent = '';
-  renderRelinkPanel();
-}
-
-function missingItems(){
-  return pendingImport ? pendingImport.slides.filter(s => !s._exists) : [];
-}
-
-function renderRelinkPanel(){
-  if(!pendingImport) return;
-  const missing = missingItems();
-  document.getElementById('missingCount').textContent = missing.length;
-  const relinkCard = document.getElementById('relinkCard');
-
-  if(missing.length === 0){
-    relinkCard.style.display = 'none';
-    finalizeImport();
-    return;
-  }
-
-  relinkCard.style.display = 'block';
-  const list = document.getElementById('relinkList');
-  list.innerHTML = '';
-
-  missing.forEach((s) => {
-    const li = document.createElement('li');
-    li.className = 'slideRow';
-    li.innerHTML = `
-      <div class="meta">
-        <div class="fname">${escapeHtml(s.filename)} &middot; ${s.type}${s.caption ? ' — ' + escapeHtml(s.caption) : ''}</div>
-      </div>
-      <div class="actions">
-        <input type="file" class="relinkSingleInput" data-key="${escapeHtml(s.storage_path)}" accept="${s.type === 'video' ? 'video/*' : 'image/*'}">
-      </div>
-    `;
-    list.appendChild(li);
-  });
-
-  list.querySelectorAll('.relinkSingleInput').forEach(inp => {
-    inp.addEventListener('change', async () => {
-      const file = inp.files[0];
-      if(file) await relinkOne(inp.dataset.key, file);
-    });
-  });
-}
-
-async function relinkOne(oldPath, file){
-  const type = file.type.startsWith('video/') ? 'video' : 'photo';
-  const newPath = `${type}/${Date.now()}-${slugFile(file.name)}`;
-  const { error } = await supabase.storage.from('media').upload(newPath, file);
-  if(error){
-    alert(`Upload failed for ${file.name}: ${error.message}`);
-    return;
-  }
-  const entry = pendingImport.slides.find(s => s.storage_path === oldPath);
-  if(entry){
-    entry.storage_path = newPath;
-    entry._exists = true;
-  }
-  renderRelinkPanel();
-}
-
-function wireRelinkDropzone(){
-  const dz = document.getElementById('relinkDropzone');
-  const input = document.getElementById('relinkFileInput');
-  dz.addEventListener('click', () => input.click());
-  dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('drag'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
-  dz.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    dz.classList.remove('drag');
-    await autoMatchFiles(e.dataTransfer.files);
-  });
-  input.addEventListener('change', async () => {
-    await autoMatchFiles(input.files);
-    input.value = '';
-  });
-}
-
-async function autoMatchFiles(fileList){
-  if(!pendingImport) return;
-  const files = [...fileList];
-  // Snapshot first -- relinkOne() mutates pendingImport.slides as it goes,
-  // so iterate over a fixed list of what's missing right now.
-  const missing = missingItems();
-  for(const entry of missing){
-    const wantName = entry.filename.toLowerCase();
-    const match = files.find(f => f.name.toLowerCase() === wantName);
-    if(match) await relinkOne(entry.storage_path, match);
-  }
-}
-
-async function finalizeImport(){
-  if(!pendingImport) return;
-  const statusEl = document.getElementById('projectStatus');
-  statusEl.textContent = 'Applying project…';
-
-  // Music: if the imported project references a music file that isn't
-  // available here, drop it rather than leave a silently broken reference
-  // -- easy enough to re-upload a single track after the fact.
-  let musicPath = pendingImport.settings.music_path || '';
-  let musicDropped = false;
-  if(musicPath){
-    const ok = await mediaExists(musicPath);
-    if(!ok){ musicPath = ''; musicDropped = true; }
-  }
-
-  // Clear existing slides (storage files are left alone, only the DB rows
-  // are cleared -- avoids deleting media that might still be referenced
-  // elsewhere or worth keeping as a manual backup).
-  const { data: existing } = await supabase.from('slides').select('*');
-  for(const row of (existing || [])){
-    await supabase.from('slides').delete().eq('id', row.id);
-  }
-
-  await supabase.from('settings').update({
-    title: pendingImport.settings.title || '',
-    subtitle: pendingImport.settings.subtitle || '',
-    dates: pendingImport.settings.dates || '',
-    closing_message: pendingImport.settings.closing_message || '',
-    music_path: musicPath,
-    loop_enabled: pendingImport.settings.loop_enabled !== false,
-    random_order: !!pendingImport.settings.random_order
-  }).eq('id', 1);
-
-  const toInsert = pendingImport.slides.map(s => ({
-    storage_path: s.storage_path,
-    type: s.type,
-    caption: s.caption,
-    sort_order: s.sort_order,
-    audio_enabled: s.audio_enabled,
-    filename: s.filename
-  }));
-  if(toInsert.length) await supabase.from('slides').insert(toInsert);
-
-  pendingImport = null;
-  document.getElementById('relinkCard').style.display = 'none';
-
-  await loadSettings();
-  await loadSlides();
-
-  statusEl.textContent = musicDropped
-    ? 'Project loaded. The background music file wasn\'t found here — re-upload it above if you want one.'
-    : 'Project loaded.';
-}
 </script>
 </body>
 </html>
