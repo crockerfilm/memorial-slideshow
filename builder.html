@@ -371,20 +371,41 @@ function loadThumb(el){
   });
 }
 
+// Requests made while the page is still coming up fail in a batch -- the
+// service worker is still starting, and coi-serviceworker reloads the page
+// once to get cross-origin isolation, which kills anything in flight. The
+// exact same thumbnails load first time once things have settled, so the
+// queue simply waits for that moment before asking for anything.
+function whenPageSettled(){
+  return new Promise(resolve => {
+    const settle = () => setTimeout(resolve, 800);
+    if(document.readyState === 'complete') settle();
+    else window.addEventListener('load', settle, { once: true });
+  });
+}
+
+const THUMB_RETRY_DELAYS_MS = [1000, 2500, 5000];
+
 async function loadThumbWithRetry(el){
   await loadThumb(el);
-  // A thumbnail that lost a race with its neighbours usually comes back fine
-  // a moment later; one quiet retry saves it from sitting there broken.
-  if(el.tagName === 'IMG' && el.naturalWidth === 0 && el.isConnected){
-    await new Promise(r => setTimeout(r, 800));
+  // Backing off rather than retrying straight away: a thumbnail that failed
+  // usually failed alongside its neighbours, so trying again immediately
+  // just lands in the same bad moment. Videos are left alone -- they report
+  // no naturalWidth, so there's nothing here to test them against.
+  for(const delay of THUMB_RETRY_DELAYS_MS){
+    if(el.tagName !== 'IMG' || el.naturalWidth > 0 || !el.isConnected) return;
+    await new Promise(r => setTimeout(r, delay));
+    if(!el.isConnected) return;
     el.removeAttribute('src');
     await loadThumb(el);
   }
 }
 
-function startThumbnailLoading(list){
+async function startThumbnailLoading(list){
   const queue = [];
   let active = 0;
+  await whenPageSettled();
+  if(!list.isConnected) return; // list was rebuilt while we waited
 
   const pump = () => {
     while(active < THUMB_CONCURRENCY && queue.length){
