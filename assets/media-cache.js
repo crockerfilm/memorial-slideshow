@@ -34,50 +34,6 @@ function isCacheableMediaRequest(request){
   return url.hostname.endsWith(MEDIA_HOST_SUFFIX);
 }
 
-// The builder lists every photo at once (200+ thumbnails), and firing that
-// many requests at Backblaze simultaneously makes a good number of them fail
-// outright -- which is what leaves rows of broken-image icons on that page.
-// One photo on its own always loads, so this is throughput, not correctness.
-// Requests are therefore queued through a small number of slots; the rest
-// wait their turn rather than being thrown at B2 and failing.
-const MAX_CONCURRENT_FETCHES = 6;
-const FETCH_TIMEOUT_MS = 20000;
-let activeFetches = 0;
-const fetchQueue = [];
-
-function acquireSlot(){
-  if(activeFetches < MAX_CONCURRENT_FETCHES){
-    activeFetches++;
-    return Promise.resolve();
-  }
-  return new Promise(resolve => fetchQueue.push(resolve));
-}
-
-function releaseSlot(){
-  const next = fetchQueue.shift();
-  if(next) next();           // hand the slot straight to whoever is waiting
-  else activeFetches--;
-}
-
-// A queued fetch that can't hold its slot forever. Without the timeout one
-// stalled connection on venue wifi would park a slot permanently and slowly
-// throttle everything behind it down to nothing.
-async function queuedFetch(url){
-  await acquireSlot();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try{
-    return await fetch(new Request(url, {
-      mode: 'cors',
-      credentials: 'omit',
-      signal: controller.signal
-    }));
-  }finally{
-    clearTimeout(timer);
-    releaseSlot();
-  }
-}
-
 // Returns a cached Response for this request, or null if we don't have one.
 // `transform` re-applies the caller's COOP/COEP/CORP headers to the cached
 // copy -- without them a cached cross-origin image would be blocked by COEP.
@@ -111,24 +67,18 @@ async function mediaResponse(request, transform){
   // can't be rewritten, so COEP on the builder page rejects it outright.
   // A CORS response is inspectable, cacheable, and can carry CORP. The
   // bucket allows cross-origin GETs from the site's own origin.
-  // Two attempts: a photo that lost a race with 200 siblings usually comes
-  // back fine a moment later, and a retry here is invisible to the page,
-  // whereas a failure it can see is a broken image on screen.
-  for(let attempt = 0; attempt < 2; attempt++){
-    try{
-      const res = await queuedFetch(request.url);
-      if(res && res.status === 200){
-        try{
-          const cache = await caches.open(MEDIA_CACHE);
-          // Not awaited: a full or unavailable cache should slow a later load
-          // down, never hold up the photo being shown right now.
-          cache.put(request.url, res.clone()).catch(() => {});
-        }catch(e){ /* storage disabled or full -- serve it anyway */ }
-        return pass(res);
-      }
-    }catch(e){ /* offline, CORS refused, or timed out -- retry, then give up */ }
-    if(attempt === 0) await new Promise(r => setTimeout(r, 400));
-  }
+  try{
+    const res = await fetch(new Request(request.url, { mode: 'cors', credentials: 'omit' }));
+    if(res && res.status === 200){
+      try{
+        const cache = await caches.open(MEDIA_CACHE);
+        // Not awaited: a full or unavailable cache should slow a later load
+        // down, never hold up the photo being shown right now.
+        cache.put(request.url, res.clone()).catch(() => {});
+      }catch(e){ /* storage disabled or full -- serve it anyway */ }
+      return pass(res);
+    }
+  }catch(e){ /* offline, or CORS not allowed from this origin -- fall through */ }
 
   // Last resort, byte for byte what this worker did before any caching
   // existed. If everything above fails, the photo is no worse off than it
