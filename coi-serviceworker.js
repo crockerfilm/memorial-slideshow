@@ -74,9 +74,15 @@ if (typeof window === 'undefined') {
             });
         };
 
-        // Local addition: B2 photos come from the local cache once we have
-        // them, so they aren't re-downloaded from Backblaze on every load.
+        // Local addition: B2 media comes from the local cache once we have it,
+        // so it isn't re-downloaded from Backblaze on every load. Photos are
+        // cached inline by mediaResponse; video and audio keep streaming live
+        // and are filled into the cache in the background, because a range
+        // request must never be answered with the whole file.
         if (isCacheableMediaRequest(request)) {
+            if (request.destination !== "image") {
+                event.waitUntil(populateMediaCache(request));
+            }
             event.respondWith(
                 mediaResponse(request, withCoiHeaders)
                     .catch((e) => console.error(e))
