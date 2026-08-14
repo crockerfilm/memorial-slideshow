@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>In Loving Memory</title>
 <link rel="stylesheet" href="assets/app.css">
+<!-- Registers the same worker builder.html uses (one worker per site, so the
+     two pages can't fight over the registration) purely for its photo cache,
+     so the show doesn't re-download everything from Backblaze every time.
+     Registered directly rather than via the coi-serviceworker script on
+     purpose: that script exists to force cross-origin isolation and reload
+     until it gets it, and the slideshow deliberately stays un-isolated. -->
+<script>
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('coi-serviceworker.js').catch(() => {});
+  });
+}
+</script>
 </head>
 <body>
 
@@ -173,6 +186,25 @@ async function renderMediaSlide(s){
   fg.className = 'media-fg';
   bg.src = url;
   fg.src = url;
+
+  if(s.type !== 'video'){
+    // Backblaze occasionally hiccups on a single request (slow or flaky wifi
+    // at a venue) -- retry a couple of times with a short backoff instead of
+    // leaving a broken-image icon up for the whole slide duration. Bounded,
+    // so a genuinely missing file can't spin here forever; it just shows the
+    // broken icon and the show moves on as it always did.
+    let retries = 0;
+    fg.onerror = () => {
+      if(retries++ >= 2) return;
+      setTimeout(() => {
+        if(!fg.isConnected) return; // slide already faded out; let it go
+        fg.removeAttribute('src');
+        bg.removeAttribute('src');
+        fg.src = url;
+        bg.src = url;
+      }, 600 * retries);
+    };
+  }
 
   if(s.type === 'video'){
     bg.muted = true;         // background copy is purely decorative, never plays audio
