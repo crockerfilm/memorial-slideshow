@@ -339,6 +339,77 @@ async function loadSlides(){
   await renderSlideList();
 }
 
+// Thumbnails are loaded a few at a time, only once they're near the viewport.
+// Backblaze serves these over HTTP/1.1, and with a couple of hundred photos in
+// the list, pointing every <img> at B2 at once fired a burst big enough that a
+// large share of them simply failed -- which is what filled this page with
+// broken-image icons. Any one of them loads fine on its own, so the fix is
+// simply not to ask for them all at the same moment.
+const THUMB_CONCURRENCY = 4;
+const THUMB_TIMEOUT_MS = 20000;
+let thumbObserver = null;
+
+// Always resolves, including on error, so one dead thumbnail can never wedge
+// the queue behind it.
+function loadThumb(el){
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if(settled) return;
+      settled = true;
+      clearTimeout(timer);
+      el.removeEventListener('load', finish);
+      el.removeEventListener('loadeddata', finish);
+      el.removeEventListener('error', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, THUMB_TIMEOUT_MS);
+    el.addEventListener('load', finish);
+    el.addEventListener('loadeddata', finish);
+    el.addEventListener('error', finish);
+    el.src = el.dataset.src;
+  });
+}
+
+async function loadThumbWithRetry(el){
+  await loadThumb(el);
+  // A thumbnail that lost a race with its neighbours usually comes back fine
+  // a moment later; one quiet retry saves it from sitting there broken.
+  if(el.tagName === 'IMG' && el.naturalWidth === 0 && el.isConnected){
+    await new Promise(r => setTimeout(r, 800));
+    el.removeAttribute('src');
+    await loadThumb(el);
+  }
+}
+
+function startThumbnailLoading(list){
+  const queue = [];
+  let active = 0;
+
+  const pump = () => {
+    while(active < THUMB_CONCURRENCY && queue.length){
+      const el = queue.shift();
+      if(!el.isConnected) continue;
+      active++;
+      loadThumbWithRetry(el).finally(() => { active--; pump(); });
+    }
+  };
+
+  if(thumbObserver) thumbObserver.disconnect(); // list is rebuilt on every change
+  thumbObserver = new IntersectionObserver(entries => {
+    let added = false;
+    entries.forEach(entry => {
+      if(!entry.isIntersecting) return;
+      thumbObserver.unobserve(entry.target);
+      queue.push(entry.target);
+      added = true;
+    });
+    if(added) pump();
+  }, { rootMargin: '400px 0px' });
+
+  list.querySelectorAll('[data-src]').forEach(el => thumbObserver.observe(el));
+}
+
 async function renderSlideList(){
   const list = document.getElementById('slideList');
   const empty = document.getElementById('emptyList');
@@ -358,9 +429,10 @@ async function renderSlideList(){
     li.draggable = true;
     li.dataset.id = s.id;
 
+    // No src yet -- these are filled in a few at a time by the loader below.
     const thumbInner = s.type === 'video'
-      ? `<video src="${urls[s.id]}" muted></video>`
-      : `<img src="${urls[s.id]}" loading="lazy">`;
+      ? `<video data-src="${urls[s.id]}" muted></video>`
+      : `<img data-src="${urls[s.id]}" alt="">`;
 
     const audioToggle = s.type === 'video'
       ? `<label class="audioToggleLabel">
@@ -383,6 +455,8 @@ async function renderSlideList(){
     `;
     list.appendChild(li);
   });
+
+  startThumbnailLoading(list);
 
   list.querySelectorAll('.captionInput').forEach(inp => {
     let t = null;
