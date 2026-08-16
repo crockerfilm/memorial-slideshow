@@ -58,8 +58,15 @@ html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:v
 
 #hud{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:space-between;
   padding:14px 22px;background:linear-gradient(to top, rgba(0,0,0,.65), transparent);z-index:20;
-  font-size:13px;color:var(--ink-dim);opacity:0;transition:opacity .4s ease;}
-#stage:hover #hud, #hud.show{opacity:1;}
+  font-size:13px;color:var(--ink-dim);opacity:0;transition:opacity .4s ease;
+  /* Must not swallow clicks while invisible. Opacity alone leaves the whole
+     bar clickable, so an unseen strip of buttons sat across the bottom of
+     the screen catching clicks meant for the slideshow. */
+  pointer-events:none;}
+/* Revealed by pointer movement (see index.html) -- the old rule here was
+   `#stage:hover #hud`, but #hud is a sibling of #stage rather than a child,
+   so it could never match and the controls stayed invisible for good. */
+#hud.show, #hud:hover{opacity:1;pointer-events:auto;}
 #hud .left,#hud .right{display:flex;align-items:center;gap:14px;}
 #hud button{background:transparent;border:1px solid #444;color:var(--ink);border-radius:4px;padding:6px 12px;cursor:pointer;font-size:13px;font-family:var(--sans);}
 #hud button:hover{border-color:var(--accent);color:var(--accent);}

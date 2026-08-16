@@ -80,6 +80,7 @@ const startBtn = document.getElementById('startBtn');
 const playBtn = document.getElementById('playBtn');
 const muteBtn = document.getElementById('muteBtn');
 const fsBtn = document.getElementById('fsBtn');
+const hud = document.getElementById('hud');
 const prevBtn = document.getElementById('prevBtn');
 const nextBtn = document.getElementById('nextBtn');
 
@@ -469,10 +470,54 @@ muteBtn.addEventListener('click', () => {
     activeEl._videoEl.muted = !wantsAudio;
   }
 });
-fsBtn.addEventListener('click', () => {
-  if(!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
-  else document.exitFullscreen().catch(()=>{});
+// --- controls visibility ----------------------------------------------
+// The bar fades in whenever the mouse moves and fades out again after a few
+// still seconds, so it's reachable during the show without sitting over the
+// photos. While hidden it takes no clicks at all (see #hud in app.css).
+const HUD_IDLE_MS = 3000;
+let hudTimer = null;
+function showHud(){
+  hud.classList.add('show');
+  clearTimeout(hudTimer);
+  hudTimer = setTimeout(() => hud.classList.remove('show'), HUD_IDLE_MS);
+}
+['mousemove', 'pointerdown', 'touchstart', 'keydown'].forEach(evt => {
+  document.addEventListener(evt, showHud, { passive: true });
 });
+
+// Safari still only has the prefixed methods, and it's the likeliest browser
+// on a Mac plugged into a projector -- without these, the button did nothing
+// there and the only way out of fullscreen was the Esc key.
+function fullscreenElement(){
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+function enterFullscreen(){
+  const el = document.documentElement;
+  const fn = el.requestFullscreen || el.webkitRequestFullscreen;
+  if(fn) Promise.resolve(fn.call(el)).catch(() => {});
+}
+function leaveFullscreen(){
+  const fn = document.exitFullscreen || document.webkitExitFullscreen;
+  if(fn) Promise.resolve(fn.call(document)).catch(() => {});
+}
+function syncFsButton(){
+  fsBtn.textContent = fullscreenElement() ? 'Exit Fullscreen' : 'Fullscreen';
+  showHud(); // entering or leaving is exactly when you want the bar visible
+}
+fsBtn.addEventListener('click', () => {
+  if(fullscreenElement()) leaveFullscreen();
+  else enterFullscreen();
+});
+document.addEventListener('fullscreenchange', syncFsButton);
+document.addEventListener('webkitfullscreenchange', syncFsButton);
+// A clicked button keeps keyboard focus, and the browser then treats a later
+// Space or Enter as pressing it again -- so after touching Next once, Space
+// was both toggling playback and firing Next a second time.
+hud.addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if(btn) btn.blur();
+});
+
 document.addEventListener('keydown', (e) => {
   if(e.code === 'ArrowRight') advance();
   if(e.code === 'ArrowLeft') back();
