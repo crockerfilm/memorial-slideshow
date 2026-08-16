@@ -364,17 +364,26 @@ function thumbPath(storagePath){
 // 404 each time and a slower list than having no thumbnails at all. Rows
 // still fall back individually, so a file uploaded after the thumbnails were
 // made still shows up.
+// Several samples rather than one, because guessing wrong here is expensive:
+// deciding "no thumbnails" for the whole album means every row pulls its
+// full-size original instead, which is hundreds of megabytes. A single file
+// that happens to have no thumbnail (or one flaky request) shouldn't be
+// enough to trigger that.
 let thumbsAvailable = null;
-async function checkThumbsAvailable(sampleStoragePath){
+async function checkThumbsAvailable(sampleStoragePaths){
   if(thumbsAvailable !== null) return thumbsAvailable;
-  try{
-    const url = await publicUrl(thumbPath(sampleStoragePath));
-    const res = await fetch(url, { method: 'GET', mode: 'cors', cache: 'no-store' });
-    thumbsAvailable = res.ok;
-  }catch(e){
-    thumbsAvailable = false; // can't tell -- assume not, and use the originals
+  for(const path of sampleStoragePaths){
+    try{
+      const url = await publicUrl(thumbPath(path));
+      const res = await fetch(url, { mode: 'cors', cache: 'no-store' });
+      if(res.ok){
+        thumbsAvailable = true;
+        return true;
+      }
+    }catch(e){ /* try the next sample */ }
   }
-  return thumbsAvailable;
+  thumbsAvailable = false; // none of the samples had one -- use the originals
+  return false;
 }
 
 // Always resolves, including on error, so one dead thumbnail can never wedge
@@ -512,7 +521,8 @@ async function renderSlideList(){
     thumbUrls[s.id] = await publicUrl(thumbPath(s.storage_path));
   }));
 
-  const useThumbs = await checkThumbsAvailable(slides[0].storage_path);
+  const useThumbs = await checkThumbsAvailable(
+    slides.slice(0, 4).map(s => s.storage_path));
 
   slides.forEach((s) => {
     const li = document.createElement('li');
@@ -526,12 +536,12 @@ async function renderSlideList(){
     let thumbInner;
     if(!useThumbs){
       thumbInner = s.type === 'video'
-        ? `<video data-src="${urls[s.id]}" muted preload="metadata"></video>`
-        : `<img data-src="${urls[s.id]}" alt="">`;
+        ? `<video data-src="${urls[s.id]}" muted preload="metadata" crossorigin="anonymous"></video>`
+        : `<img data-src="${urls[s.id]}" alt="" crossorigin="anonymous">`;
     }else{
       thumbInner = s.type === 'video'
-        ? `<img data-src="${thumbUrls[s.id]}" data-fallback-video="${urls[s.id]}" alt="">`
-        : `<img data-src="${thumbUrls[s.id]}" data-fallback="${urls[s.id]}" alt="">`;
+        ? `<img data-src="${thumbUrls[s.id]}" data-fallback-video="${urls[s.id]}" alt="" crossorigin="anonymous">`
+        : `<img data-src="${thumbUrls[s.id]}" data-fallback="${urls[s.id]}" alt="" crossorigin="anonymous">`;
     }
 
     const audioToggle = s.type === 'video'
