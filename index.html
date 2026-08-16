@@ -145,6 +145,11 @@ async function load(){
 
   buildItems();
   startBtn.style.display = 'inline-block';
+
+  // Start filling the buffer straight away rather than waiting for the click.
+  // Whatever time passes between the page being ready and someone pressing
+  // Begin is time the first slides can spend downloading.
+  preloadAhead(0); // items[0] is the title card, so this warms the first real slides
 }
 
 function renderTitleCard(){
@@ -170,6 +175,84 @@ function renderClosingCard(){
   return el;
 }
 let globalMuted = false;
+
+// --- preloading -------------------------------------------------------
+// Media used to only start downloading at the moment its slide came up, so
+// anything that hadn't arrived yet showed as black -- most visibly the first
+// video, which had the title card's few seconds to fetch tens of megabytes
+// and didn't make it. The next few slides are now fetched in the background
+// while the current one is on screen, and the title card's time is spent
+// filling the buffer rather than waiting.
+const PRELOAD_AHEAD = 3;
+const PHOTO_READY_MS = 4000;
+const VIDEO_READY_MS = 10000;
+
+const warmedUrls = new Set();
+const warmHold = [];   // keeps preloaded elements alive while they buffer
+
+// Always resolves. A file that never loads must delay the show by the
+// timeout at most, never stall it.
+function whenReady(el, timeoutMs){
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => { if(done) return; done = true; clearTimeout(timer); resolve(); };
+    const timer = setTimeout(finish, timeoutMs);
+    const isVideo = el.tagName === 'VIDEO';
+    if(isVideo ? el.readyState >= 3 : (el.complete && el.naturalWidth > 0)) return finish();
+    if(isVideo){
+      el.addEventListener('canplaythrough', finish, { once: true });
+      el.addEventListener('canplay', finish, { once: true });
+    }else{
+      el.addEventListener('load', finish, { once: true });
+    }
+    el.addEventListener('error', finish, { once: true });
+  });
+}
+
+function warmMedia(url, isVideo){
+  if(warmedUrls.has(url)) return Promise.resolve();
+  warmedUrls.add(url);
+  let el;
+  if(isVideo){
+    el = document.createElement('video');
+    el.preload = 'auto';
+    el.muted = true;
+    el.playsInline = true;
+  }else{
+    el = new Image();
+  }
+  el.src = url;
+  if(isVideo) el.load();
+  // Held onto so the browser doesn't drop the transfer half-finished, but
+  // only a few at a time -- the point is a head start, not keeping every
+  // photo of the show in memory at once.
+  warmHold.push(el);
+  while(warmHold.length > 8){
+    const old = warmHold.shift();
+    try{ old.removeAttribute('src'); if(old.load) old.load(); }catch(e){}
+  }
+  return whenReady(el, isVideo ? VIDEO_READY_MS : PHOTO_READY_MS);
+}
+
+// Nearest slide first, one at a time. Fetching the whole lookahead at once
+// splits the connection between files, which is the opposite of what's wanted
+// here -- the very next slide is the one about to be needed, and three videos
+// downloading in parallel is how the first one ends up late.
+let preloading = false;
+async function preloadAhead(fromIndex){
+  if(preloading) return;
+  preloading = true;
+  try{
+    for(let i = 1; i <= PRELOAD_AHEAD; i++){
+      const item = items[(fromIndex + i) % items.length];
+      if(!item || item.kind !== 'slide') continue;
+      const url = await publicUrl(item.data.storage_path);
+      await warmMedia(url, item.data.type === 'video');
+    }
+  }finally{
+    preloading = false;
+  }
+}
 
 async function renderMediaSlide(s){
   const el = document.createElement('div');
@@ -239,6 +322,14 @@ async function renderMediaSlide(s){
     cap.textContent = s.caption;
     el.appendChild(cap);
   }
+
+  // Hold here until there's actually a frame to show. The slide currently on
+  // screen stays up meanwhile, so a slow file lingers on the previous photo
+  // instead of cutting to black. Bounded, so it can only ever delay the show,
+  // never stop it -- and normally this is instant, because preloading has
+  // already fetched the file by the time we get here.
+  await whenReady(fg, s.type === 'video' ? VIDEO_READY_MS : PHOTO_READY_MS);
+
   return el;
 }
 
@@ -278,6 +369,10 @@ async function renderCurrent(){
   if(items[current] !== item) return;
 
   stage.appendChild(el);
+
+  // Queue up what's coming while this slide is on screen.
+  preloadAhead(current);
+
   counter.textContent = item.kind === 'title' ? 'Title'
     : item.kind === 'closing' ? 'Closing'
     : `${current} / ${slides.length}`;
