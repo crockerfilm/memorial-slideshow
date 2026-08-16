@@ -349,6 +349,34 @@ const THUMB_CONCURRENCY = 4;
 const THUMB_TIMEOUT_MS = 20000;
 let thumbObserver = null;
 
+// Small square previews live alongside the originals under thumb/, keyed off
+// the same unique timestamped filename (photo/1786673883496-img-0426.jpeg ->
+// thumb/1786673883496-img-0426.jpg). Only this page uses them; the slideshow
+// itself always plays the full-size original.
+function thumbPath(storagePath){
+  const base = storagePath.split('/').pop().replace(/\.[^.]+$/, '');
+  return 'thumb/' + base + '.jpg';
+}
+
+// Checked once per page load with a single request, rather than letting all
+// 200-odd rows discover the same answer the hard way: if thumbnails haven't
+// been generated for this album, asking for one per row would mean a wasted
+// 404 each time and a slower list than having no thumbnails at all. Rows
+// still fall back individually, so a file uploaded after the thumbnails were
+// made still shows up.
+let thumbsAvailable = null;
+async function checkThumbsAvailable(sampleStoragePath){
+  if(thumbsAvailable !== null) return thumbsAvailable;
+  try{
+    const url = await publicUrl(thumbPath(sampleStoragePath));
+    const res = await fetch(url, { method: 'GET', mode: 'cors', cache: 'no-store' });
+    thumbsAvailable = res.ok;
+  }catch(e){
+    thumbsAvailable = false; // can't tell -- assume not, and use the originals
+  }
+  return thumbsAvailable;
+}
+
 // Always resolves, including on error, so one dead thumbnail can never wedge
 // the queue behind it.
 function loadThumb(el){
@@ -386,8 +414,44 @@ function whenPageSettled(){
 
 const THUMB_RETRY_DELAYS_MS = [1000, 2500, 5000];
 
+// Swaps a row over to the full-size original. Used when a file has no
+// thumbnail yet, so the list looks the same either way and this page keeps
+// working whether or not thumbnails have been generated.
+function useFallback(el){
+  const videoSrc = el.dataset.fallbackVideo;
+  if(videoSrc){
+    // Only a real <video> can show a frame of an mp4, so the placeholder
+    // image is replaced by one rather than re-pointed.
+    const v = document.createElement('video');
+    v.muted = true;
+    v.preload = 'metadata';
+    v.dataset.src = videoSrc;
+    el.replaceWith(v);
+    return v;
+  }
+  if(el.dataset.fallback){
+    el.dataset.src = el.dataset.fallback;
+    delete el.dataset.fallback;
+    el.removeAttribute('src');
+    return el;
+  }
+  return null;
+}
+
 async function loadThumbWithRetry(el){
   await loadThumb(el);
+
+  // No thumbnail generated for this one yet -- fall back to the original
+  // before spending any retries on a file that simply isn't there.
+  if(el.tagName === 'IMG' && el.naturalWidth === 0 && el.isConnected &&
+     (el.dataset.fallback || el.dataset.fallbackVideo)){
+    const replacement = useFallback(el);
+    if(replacement){
+      el = replacement;
+      await loadThumb(el);
+    }
+  }
+
   // Backing off rather than retrying straight away: a thumbnail that failed
   // usually failed alongside its neighbours, so trying again immediately
   // just lands in the same bad moment. Videos are left alone -- they report
@@ -442,7 +506,13 @@ async function renderSlideList(){
   // Resolve every thumbnail URL up front (async in test mode) before
   // building any DOM, so rows don't flash in without images.
   const urls = {};
-  await Promise.all(slides.map(async s => { urls[s.id] = await publicUrl(s.storage_path); }));
+  const thumbUrls = {};
+  await Promise.all(slides.map(async s => {
+    urls[s.id] = await publicUrl(s.storage_path);
+    thumbUrls[s.id] = await publicUrl(thumbPath(s.storage_path));
+  }));
+
+  const useThumbs = await checkThumbsAvailable(slides[0].storage_path);
 
   slides.forEach((s) => {
     const li = document.createElement('li');
@@ -451,9 +521,18 @@ async function renderSlideList(){
     li.dataset.id = s.id;
 
     // No src yet -- these are filled in a few at a time by the loader below.
-    const thumbInner = s.type === 'video'
-      ? `<video data-src="${urls[s.id]}" muted></video>`
-      : `<img data-src="${urls[s.id]}" alt="">`;
+    // data-fallback is the full-size original, used if this particular file
+    // has no thumbnail yet, so the list still fills either way.
+    let thumbInner;
+    if(!useThumbs){
+      thumbInner = s.type === 'video'
+        ? `<video data-src="${urls[s.id]}" muted preload="metadata"></video>`
+        : `<img data-src="${urls[s.id]}" alt="">`;
+    }else{
+      thumbInner = s.type === 'video'
+        ? `<img data-src="${thumbUrls[s.id]}" data-fallback-video="${urls[s.id]}" alt="">`
+        : `<img data-src="${thumbUrls[s.id]}" data-fallback="${urls[s.id]}" alt="">`;
+    }
 
     const audioToggle = s.type === 'video'
       ? `<label class="audioToggleLabel">
